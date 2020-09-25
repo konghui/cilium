@@ -16,6 +16,10 @@ package linux
 
 import (
 	"github.com/cilium/cilium/pkg/datapath"
+	"github.com/cilium/cilium/pkg/datapath/connector"
+	"github.com/cilium/cilium/pkg/datapath/linux/config"
+	"github.com/cilium/cilium/pkg/datapath/loader"
+	"github.com/cilium/cilium/pkg/logging/logfields"
 )
 
 // DatapathConfiguration is the static configuration of the datapath. The
@@ -23,22 +27,36 @@ import (
 type DatapathConfiguration struct {
 	// HostDevice is the name of the device to be used to access the host.
 	HostDevice string
+	// EncryptInterface is the name of the device to be used for direct ruoting encryption
+	EncryptInterface string
 }
 
 type linuxDatapath struct {
+	datapath.ConfigWriter
+	datapath.IptablesManager
 	node           datapath.NodeHandler
 	nodeAddressing datapath.NodeAddressing
 	config         DatapathConfiguration
+	loader         *loader.Loader
 }
 
 // NewDatapath creates a new Linux datapath
-func NewDatapath(config DatapathConfiguration) datapath.Datapath {
+func NewDatapath(cfg DatapathConfiguration, ruleManager datapath.IptablesManager) datapath.Datapath {
 	dp := &linuxDatapath{
-		nodeAddressing: NewNodeAddressing(),
-		config:         config,
+		ConfigWriter:    &config.HeaderfileWriter{},
+		IptablesManager: ruleManager,
+		nodeAddressing:  NewNodeAddressing(),
+		config:          cfg,
+		loader:          loader.NewLoader(canDisableDwarfRelocations),
 	}
 
-	dp.node = NewNodeHandler(config, dp.nodeAddressing)
+	dp.node = NewNodeHandler(cfg, dp.nodeAddressing)
+
+	if cfg.EncryptInterface != "" {
+		if err := connector.DisableRpFilter(cfg.EncryptInterface); err != nil {
+			log.WithField(logfields.Interface, cfg.EncryptInterface).Warn("Rpfilter could not be disabled, node to node encryption may fail")
+		}
+	}
 
 	return dp
 }
@@ -52,4 +70,12 @@ func (l *linuxDatapath) Node() datapath.NodeHandler {
 // node
 func (l *linuxDatapath) LocalNodeAddressing() datapath.NodeAddressing {
 	return l.nodeAddressing
+}
+
+func (l *linuxDatapath) Loader() datapath.Loader {
+	return l.loader
+}
+
+func (l *linuxDatapath) SetupIPVLAN(netNS string) (int, int, error) {
+	return connector.ConfigureNetNSForIPVLAN(netNS)
 }

@@ -1,4 +1,4 @@
-// Copyright 2018 Authors of Cilium
+// Copyright 2018-2019 Authors of Cilium
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -17,6 +17,7 @@
 package clustermesh
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io/ioutil"
@@ -25,14 +26,15 @@ import (
 	"testing"
 	"time"
 
+	"github.com/cilium/cilium/pkg/identity"
 	"github.com/cilium/cilium/pkg/identity/cache"
 	"github.com/cilium/cilium/pkg/kvstore"
 	"github.com/cilium/cilium/pkg/kvstore/store"
 	"github.com/cilium/cilium/pkg/lock"
-	"github.com/cilium/cilium/pkg/logging"
+	fakeConfig "github.com/cilium/cilium/pkg/option/fake"
 	"github.com/cilium/cilium/pkg/testutils"
+	"github.com/cilium/cilium/pkg/testutils/allocator"
 
-	"github.com/sirupsen/logrus"
 	. "gopkg.in/check.v1"
 )
 
@@ -90,30 +92,22 @@ func (o *testObserver) OnUpdate(k store.Key) {
 	nodesMutex.Unlock()
 }
 
-func (o *testObserver) OnDelete(k store.Key) {
+func (o *testObserver) OnDelete(k store.NamedKey) {
 	n := k.(*testNode)
 	nodesMutex.Lock()
 	delete(nodes, n.GetKeyName())
 	nodesMutex.Unlock()
 }
 
-type identityAllocatorOwnerMock struct{}
-
-func (i *identityAllocatorOwnerMock) TriggerPolicyUpdates(force bool, reason string) {
-}
-
-func (i *identityAllocatorOwnerMock) GetNodeSuffix() string {
-	return "foo"
-}
-
 func (s *ClusterMeshTestSuite) TestClusterMesh(c *C) {
 	kvstore.SetupDummy("etcd")
-	defer kvstore.Close()
+	defer kvstore.Client().Close()
 
-	logging.DefaultLogger.SetLevel(logrus.DebugLevel)
-
-	cache.InitIdentityAllocator(&identityAllocatorOwnerMock{})
-	defer cache.Close()
+	identity.InitWellKnownIdentities(&fakeConfig.Config{})
+	// The nils are only used by k8s CRD identities. We default to kvstore.
+	mgr := cache.NewCachingIdentityAllocator(&allocator.IdentityAllocatorOwnerMock{})
+	<-mgr.InitIdentityAllocator(nil, nil)
+	defer mgr.Close()
 
 	dir, err := ioutil.TempDir("", "multicluster")
 	c.Assert(err, IsNil)
@@ -130,10 +124,11 @@ func (s *ClusterMeshTestSuite) TestClusterMesh(c *C) {
 	c.Assert(err, IsNil)
 
 	cm, err := NewClusterMesh(Configuration{
-		Name:            "test2",
-		ConfigDirectory: dir,
-		NodeKeyCreator:  testNodeCreator,
-		nodeObserver:    &testObserver{},
+		Name:                  "test2",
+		ConfigDirectory:       dir,
+		NodeKeyCreator:        testNodeCreator,
+		nodeObserver:          &testObserver{},
+		RemoteIdentityWatcher: mgr,
 	})
 	c.Assert(err, IsNil)
 	c.Assert(cm, Not(IsNil))
@@ -149,7 +144,7 @@ func (s *ClusterMeshTestSuite) TestClusterMesh(c *C) {
 	for _, rc := range cm.clusters {
 		rc.mutex.RLock()
 		for _, name := range nodeNames {
-			err = rc.remoteNodes.UpdateLocalKeySync(&testNode{Name: name, Cluster: rc.name})
+			err = rc.remoteNodes.UpdateLocalKeySync(context.TODO(), &testNode{Name: name, Cluster: rc.name})
 			c.Assert(err, IsNil)
 		}
 		rc.mutex.RUnlock()

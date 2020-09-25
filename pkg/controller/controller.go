@@ -15,6 +15,7 @@
 package controller
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"time"
@@ -35,7 +36,7 @@ const (
 
 // ControllerFunc is a function that the controller runs. This type is used for
 // DoFunc and StopFunc.
-type ControllerFunc func() error
+type ControllerFunc func(ctx context.Context) error
 
 // ExitReason is a returnable type from DoFunc that causes the
 // controller to exit. This reason is recorded in the controller's status. The
@@ -81,6 +82,8 @@ type ControllerParams struct {
 
 	// NoErrorRetry when set to true, disabled retries on errors
 	NoErrorRetry bool
+
+	Context context.Context
 }
 
 // undefinedDoFunc is used when no DoFunc is set. controller.DoFunc is set to this
@@ -92,7 +95,7 @@ func undefinedDoFunc(name string) error {
 // NoopFunc is a no-op placeholder for DoFunc & StopFunc.
 // It is automatically used when StopFunc is undefined, and can be used as a
 // DoFunc stub when the controller should only run StopFunc.
-func NoopFunc() error {
+func NoopFunc(ctx context.Context) error {
 	return nil
 }
 
@@ -145,6 +148,8 @@ type Controller struct {
 	uuid              string
 	stop              chan struct{}
 	update            chan struct{}
+	ctxDoFunc         context.Context
+	cancelDoFunc      context.CancelFunc
 
 	// terminated is closed after the controller has been terminated
 	terminated chan struct{}
@@ -197,7 +202,7 @@ func (c *Controller) runController() {
 			interval = params.RunInterval
 
 			start := time.Now()
-			err = params.DoFunc()
+			err = params.DoFunc(c.ctxDoFunc)
 			duration := time.Since(start)
 
 			c.mutex.Lock()
@@ -283,7 +288,7 @@ func (c *Controller) runController() {
 shutdown:
 	c.getLogger().Debug("Shutting down controller")
 
-	if err := params.StopFunc(); err != nil {
+	if err := params.StopFunc(context.TODO()); err != nil {
 		c.mutex.Lock()
 		c.recordError(err)
 		c.mutex.Unlock()
@@ -308,6 +313,10 @@ func (c *Controller) updateParamsLocked(params ControllerParams) {
 }
 
 func (c *Controller) stopController() {
+	if c.cancelDoFunc != nil {
+		c.cancelDoFunc()
+	}
+
 	close(c.stop)
 	close(c.update)
 }

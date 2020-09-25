@@ -1,4 +1,4 @@
-// Copyright 2018 Authors of Cilium
+// Copyright 2018-2019 Authors of Cilium
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -15,6 +15,7 @@
 package k8sTest
 
 import (
+	"context"
 	"fmt"
 
 	. "github.com/cilium/cilium/test/ginkgo-ext"
@@ -26,17 +27,19 @@ import (
 var _ = Describe("K8sHealthTest", func() {
 
 	var (
-		kubectl *helpers.Kubectl
+		kubectl        *helpers.Kubectl
+		ciliumFilename string
 	)
 
 	BeforeAll(func() {
 		kubectl = helpers.CreateKubectl(helpers.K8s1VMName(), logger)
-		ProvisionInfraPods(kubectl)
+
+		ciliumFilename = helpers.TimestampFilename("cilium.yaml")
+		DeployCiliumAndDNS(kubectl, ciliumFilename)
 	})
 
 	AfterFailed(func() {
-		kubectl.CiliumReport(helpers.KubeSystemNamespace,
-			"cilium endpoint list")
+		kubectl.CiliumReport("cilium endpoint list")
 	})
 
 	JustAfterEach(func() {
@@ -47,12 +50,17 @@ var _ = Describe("K8sHealthTest", func() {
 		ExpectAllPodsTerminated(kubectl)
 	})
 
+	AfterAll(func() {
+		UninstallCiliumFromManifest(kubectl, ciliumFilename)
+		kubectl.CloseSSHClient()
+	})
+
 	getCilium := func(node string) (pod, ip string) {
-		pod, err := kubectl.GetCiliumPodOnNode(helpers.KubeSystemNamespace, node)
+		pod, err := kubectl.GetCiliumPodOnNodeWithLabel(node)
 		Expect(err).Should(BeNil())
 
 		res, err := kubectl.Get(
-			helpers.KubeSystemNamespace,
+			helpers.CiliumNamespace,
 			fmt.Sprintf("pod %s", pod)).Filter("{.status.podIP}")
 		Expect(err).Should(BeNil())
 		ip = res.String()
@@ -61,21 +69,16 @@ var _ = Describe("K8sHealthTest", func() {
 	}
 
 	checkIP := func(pod, ip string) {
-		jsonpath := fmt.Sprintf("{.cluster.nodes[*].primary-address.*}")
-		ciliumCmd := fmt.Sprintf("cilium status -o jsonpath='%s'", jsonpath)
+		jsonpath := "{.nodes[*].host.primary-address.ip}"
+		ciliumCmd := fmt.Sprintf("cilium-health status -o jsonpath='%s'", jsonpath)
 
 		err := kubectl.CiliumExecUntilMatch(pod, ciliumCmd, ip)
 		ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Never saw cilium-health ip %s in pod %s", ip, pod)
 	}
 
 	It("checks cilium-health status between nodes", func() {
-		switch helpers.GetCurrentIntegration() {
-		case helpers.CIIntegrationFlannel:
-			Skip(fmt.Sprintf(
-				"Cilium in %q mode does not support cilium-health. Skipping cilium-health status between nodes.",
-				helpers.CIIntegrationFlannel))
-			return
-		}
+		SkipIfIntegration(helpers.CIIntegrationFlannel)
+		SkipIfIntegration(helpers.CIIntegrationEKS)
 
 		cilium1, cilium1IP := getCilium(helpers.K8s1)
 		cilium2, cilium2IP := getCilium(helpers.K8s2)
@@ -87,10 +90,9 @@ var _ = Describe("K8sHealthTest", func() {
 		checkIP(cilium2, cilium2IP)
 
 		By("checking that `cilium-health --probe` succeeds")
-		healthCmd := fmt.Sprintf("cilium-health status --probe -o json")
-		status := kubectl.CiliumExec(cilium1, healthCmd)
-		Expect(status.Output()).ShouldNot(ContainSubstring("error"))
-		status.ExpectSuccess()
+		healthCmd := "cilium-health status --probe -o json"
+		status := kubectl.CiliumExecMustSucceed(context.TODO(), cilium1, healthCmd)
+		Expect(status.Stdout()).ShouldNot(ContainSubstring("error"))
 
 		apiPaths := []string{
 			"endpoint.icmp",
@@ -100,13 +102,17 @@ var _ = Describe("K8sHealthTest", func() {
 		}
 		for node := 0; node <= 1; node++ {
 			healthCmd := "cilium-health status -o json"
-			status := kubectl.CiliumExec(cilium1, healthCmd)
-			status.ExpectSuccess("Cannot retrieve health status")
+			status := kubectl.CiliumExecMustSucceed(context.TODO(), cilium1, healthCmd, "Cannot retrieve health status")
 			for _, path := range apiPaths {
-				filter := fmt.Sprintf("{.nodes[%d].%s.status}", node, path)
+				filter := fmt.Sprintf("{.nodes[%d].%s}", node, path)
 				By("checking API response for %q", filter)
 				data, err := status.Filter(filter)
 				Expect(err).To(BeNil(), "cannot retrieve filter %q from health output", filter)
+				Expect(data.String()).Should(Not((BeEmpty())))
+				statusFilter := fmt.Sprintf("{.nodes[%d].%s.status}", node, path)
+				By("checking API status response for %q", statusFilter)
+				data, err = status.Filter(statusFilter)
+				Expect(err).To(BeNil(), "cannot retrieve filter %q from health output", statusFilter)
 				Expect(data.String()).Should(BeEmpty())
 			}
 		}

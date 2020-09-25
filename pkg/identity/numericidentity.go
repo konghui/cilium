@@ -1,4 +1,4 @@
-// Copyright 2016-2018 Authors of Cilium
+// Copyright 2016-2019 Authors of Cilium
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -17,7 +17,6 @@ package identity
 import (
 	"errors"
 	"fmt"
-	"github.com/cilium/cilium/pkg/option"
 	"strconv"
 
 	api "github.com/cilium/cilium/pkg/k8s/apis/cilium.io"
@@ -73,6 +72,10 @@ const (
 	// ReservedIdentityInit is the identity given to endpoints that have not
 	// received any labels yet.
 	ReservedIdentityInit
+
+	// ReservedIdentityRemoteNode is the identity given to all nodes in
+	// local and remote clusters except for the local node.
+	ReservedIdentityRemoteNode
 
 	// --------------------------------------------------------------
 	// Special identities for well-known cluster components
@@ -143,11 +146,14 @@ func (w wellKnownIdentities) lookupByNumericIdentity(identity NumericIdentity) *
 	return wki.identity
 }
 
-// InitWellKnownIdentities establishes all well-known identities
-func InitWellKnownIdentities() {
-	// Derive the namespace in which the Cilium components are running
-	namespace := option.Config.K8sNamespace
+type Configuration interface {
+	LocalClusterName() string
+	CiliumNamespaceName() string
+}
 
+// InitWellKnownIdentities establishes all well-known identities. Returns the
+// number of well-known identities initialized.
+func InitWellKnownIdentities(c Configuration) int {
 	// etcd-operator labels
 	//   k8s:io.cilium.k8s.policy.serviceaccount=cilium-etcd-sa
 	//   k8s:io.kubernetes.pod.namespace=<NAMESPACE>
@@ -155,9 +161,9 @@ func InitWellKnownIdentities() {
 	//   k8s:io.cilium.k8s.policy.cluster=default
 	WellKnown.add(ReservedETCDOperator, []string{
 		"k8s:io.cilium/app=etcd-operator",
-		fmt.Sprintf("k8s:%s=%s", api.PodNamespaceLabel, namespace),
+		fmt.Sprintf("k8s:%s=%s", api.PodNamespaceLabel, c.CiliumNamespaceName()),
 		fmt.Sprintf("k8s:%s=cilium-etcd-sa", api.PolicyLabelServiceAccount),
-		fmt.Sprintf("k8s:%s=%s", api.PolicyLabelCluster, option.Config.ClusterName),
+		fmt.Sprintf("k8s:%s=%s", api.PolicyLabelCluster, c.LocalClusterName()),
 	})
 
 	// cilium-etcd labels
@@ -174,9 +180,9 @@ func InitWellKnownIdentities() {
 		"k8s:app=etcd",
 		"k8s:etcd_cluster=cilium-etcd",
 		"k8s:io.cilium/app=etcd-operator",
-		fmt.Sprintf("k8s:%s=%s", api.PodNamespaceLabel, namespace),
+		fmt.Sprintf("k8s:%s=%s", api.PodNamespaceLabel, c.CiliumNamespaceName()),
 		fmt.Sprintf("k8s:%s=default", api.PolicyLabelServiceAccount),
-		fmt.Sprintf("k8s:%s=%s", api.PolicyLabelCluster, option.Config.ClusterName),
+		fmt.Sprintf("k8s:%s=%s", api.PolicyLabelCluster, c.LocalClusterName()),
 	})
 
 	// kube-dns labels
@@ -188,7 +194,7 @@ func InitWellKnownIdentities() {
 		"k8s:k8s-app=kube-dns",
 		fmt.Sprintf("k8s:%s=kube-system", api.PodNamespaceLabel),
 		fmt.Sprintf("k8s:%s=kube-dns", api.PolicyLabelServiceAccount),
-		fmt.Sprintf("k8s:%s=%s", api.PolicyLabelCluster, option.Config.ClusterName),
+		fmt.Sprintf("k8s:%s=%s", api.PolicyLabelCluster, c.LocalClusterName()),
 	})
 
 	// kube-dns EKS labels
@@ -202,7 +208,7 @@ func InitWellKnownIdentities() {
 		"k8s:eks.amazonaws.com/component=kube-dns",
 		fmt.Sprintf("k8s:%s=kube-system", api.PodNamespaceLabel),
 		fmt.Sprintf("k8s:%s=kube-dns", api.PolicyLabelServiceAccount),
-		fmt.Sprintf("k8s:%s=%s", api.PolicyLabelCluster, option.Config.ClusterName),
+		fmt.Sprintf("k8s:%s=%s", api.PolicyLabelCluster, c.LocalClusterName()),
 	})
 
 	// kube-dns EKS labels
@@ -216,7 +222,7 @@ func InitWellKnownIdentities() {
 		"k8s:eks.amazonaws.com/component=coredns",
 		fmt.Sprintf("k8s:%s=kube-system", api.PodNamespaceLabel),
 		fmt.Sprintf("k8s:%s=coredns", api.PolicyLabelServiceAccount),
-		fmt.Sprintf("k8s:%s=%s", api.PolicyLabelCluster, option.Config.ClusterName),
+		fmt.Sprintf("k8s:%s=%s", api.PolicyLabelCluster, c.LocalClusterName()),
 	})
 
 	// CoreDNS labels
@@ -228,7 +234,7 @@ func InitWellKnownIdentities() {
 		"k8s:k8s-app=kube-dns",
 		fmt.Sprintf("k8s:%s=kube-system", api.PodNamespaceLabel),
 		fmt.Sprintf("k8s:%s=coredns", api.PolicyLabelServiceAccount),
-		fmt.Sprintf("k8s:%s=%s", api.PolicyLabelCluster, option.Config.ClusterName),
+		fmt.Sprintf("k8s:%s=%s", api.PolicyLabelCluster, c.LocalClusterName()),
 	})
 
 	// CiliumOperator labels
@@ -240,9 +246,9 @@ func InitWellKnownIdentities() {
 	WellKnown.add(ReservedCiliumOperator, []string{
 		"k8s:name=cilium-operator",
 		"k8s:io.cilium/app=operator",
-		fmt.Sprintf("k8s:%s=%s", api.PodNamespaceLabel, namespace),
+		fmt.Sprintf("k8s:%s=%s", api.PodNamespaceLabel, c.CiliumNamespaceName()),
 		fmt.Sprintf("k8s:%s=cilium-operator", api.PolicyLabelServiceAccount),
-		fmt.Sprintf("k8s:%s=%s", api.PolicyLabelCluster, option.Config.ClusterName),
+		fmt.Sprintf("k8s:%s=%s", api.PolicyLabelCluster, c.LocalClusterName()),
 	})
 
 	// cilium-etcd-operator labels
@@ -254,26 +260,30 @@ func InitWellKnownIdentities() {
 	WellKnown.add(ReservedCiliumEtcdOperator, []string{
 		"k8s:name=cilium-etcd-operator",
 		"k8s:io.cilium/app=etcd-operator",
-		fmt.Sprintf("k8s:%s=%s", api.PodNamespaceLabel, namespace),
+		fmt.Sprintf("k8s:%s=%s", api.PodNamespaceLabel, c.CiliumNamespaceName()),
 		fmt.Sprintf("k8s:%s=cilium-etcd-operator", api.PolicyLabelServiceAccount),
-		fmt.Sprintf("k8s:%s=%s", api.PolicyLabelCluster, option.Config.ClusterName),
+		fmt.Sprintf("k8s:%s=%s", api.PolicyLabelCluster, c.LocalClusterName()),
 	})
+
+	return len(WellKnown)
 }
 
 var (
 	reservedIdentities = map[string]NumericIdentity{
-		labels.IDNameHost:      ReservedIdentityHost,
-		labels.IDNameWorld:     ReservedIdentityWorld,
-		labels.IDNameUnmanaged: ReservedIdentityUnmanaged,
-		labels.IDNameHealth:    ReservedIdentityHealth,
-		labels.IDNameInit:      ReservedIdentityInit,
+		labels.IDNameHost:       ReservedIdentityHost,
+		labels.IDNameWorld:      ReservedIdentityWorld,
+		labels.IDNameUnmanaged:  ReservedIdentityUnmanaged,
+		labels.IDNameHealth:     ReservedIdentityHealth,
+		labels.IDNameInit:       ReservedIdentityInit,
+		labels.IDNameRemoteNode: ReservedIdentityRemoteNode,
 	}
 	reservedIdentityNames = map[NumericIdentity]string{
-		ReservedIdentityHost:      labels.IDNameHost,
-		ReservedIdentityWorld:     labels.IDNameWorld,
-		ReservedIdentityUnmanaged: labels.IDNameUnmanaged,
-		ReservedIdentityHealth:    labels.IDNameHealth,
-		ReservedIdentityInit:      labels.IDNameInit,
+		ReservedIdentityHost:       labels.IDNameHost,
+		ReservedIdentityWorld:      labels.IDNameWorld,
+		ReservedIdentityUnmanaged:  labels.IDNameUnmanaged,
+		ReservedIdentityHealth:     labels.IDNameHealth,
+		ReservedIdentityInit:       labels.IDNameInit,
+		ReservedIdentityRemoteNode: labels.IDNameRemoteNode,
 	}
 
 	// WellKnown identities stores global state of all well-known identities.

@@ -24,11 +24,12 @@ import (
 	"text/tabwriter"
 
 	"github.com/cilium/cilium/api/v1/models"
-	"github.com/cilium/cilium/common"
 	"github.com/cilium/cilium/pkg/bpf"
 	"github.com/cilium/cilium/pkg/byteorder"
 	"github.com/cilium/cilium/pkg/command"
+	"github.com/cilium/cilium/pkg/common"
 	"github.com/cilium/cilium/pkg/identity"
+	identitymodel "github.com/cilium/cilium/pkg/identity/model"
 	"github.com/cilium/cilium/pkg/maps/policymap"
 	"github.com/cilium/cilium/pkg/policy/trafficdirection"
 	"github.com/cilium/cilium/pkg/u8proto"
@@ -84,16 +85,11 @@ func listAllMaps() {
 func listMap(args []string) {
 	lbl := args[0]
 
-	if lbl != "" {
-		if id := identity.GetReservedID(lbl); id != identity.IdentityUnknown {
-			lbl = "reserved_" + strconv.FormatUint(uint64(id), 10)
-		}
-	} else {
-		Fatalf("Need ID or label\n")
+	mapPath, err := endpointToPolicyMapPath(lbl)
+	if err != nil {
+		Fatalf("Failed to parse endpointID %q", lbl)
 	}
-
-	file := bpf.MapPath(policymap.MapName + lbl)
-	dumpMap(file)
+	dumpMap(mapPath)
 }
 
 func dumpMap(file string) {
@@ -143,7 +139,7 @@ func formatMap(w io.Writer, statsMap []policymap.PolicyEntryDump) {
 				fmt.Fprintf(os.Stderr, "Was impossible to retrieve label ID %d: %s\n",
 					id, err)
 			} else {
-				labelsID[id] = identity.NewIdentityFromModel(lbls)
+				labelsID[id] = identitymodel.NewIdentityFromModel(lbls)
 			}
 		}
 

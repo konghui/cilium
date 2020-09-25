@@ -17,6 +17,7 @@
 package controller
 
 import (
+	"context"
 	"fmt"
 	"sync/atomic"
 	"testing"
@@ -51,7 +52,7 @@ func (b *ControllerSuite) TestStopFunc(c *C) {
 	mngr.UpdateController("test", ControllerParams{
 		RunInterval: time.Second,
 		DoFunc:      NoopFunc,
-		StopFunc: func() error {
+		StopFunc: func(ctx context.Context) error {
 			stopFuncRan = true
 			close(waitChan)
 			return nil
@@ -73,11 +74,11 @@ func (b *ControllerSuite) TestSelfExit(c *C) {
 	mngr := Manager{}
 	mngr.UpdateController("test", ControllerParams{
 		RunInterval: 100 * time.Millisecond,
-		DoFunc: func() error {
+		DoFunc: func(ctx context.Context) error {
 			atomic.AddUint32(&iterations, 1)
 			return NewExitReason("test exit")
 		},
-		StopFunc: func() error {
+		StopFunc: func(ctx context.Context) error {
 			close(waitChan)
 			return nil
 		},
@@ -120,8 +121,8 @@ func (b *ControllerSuite) TestRunController(c *C) {
 	mngr := NewManager()
 	o := &testObj{}
 
-	ctrl := mngr.UpdateController("test", ControllerParams{
-		DoFunc: func() error {
+	ctrl := mngr.updateController("test", ControllerParams{
+		DoFunc: func(ctx context.Context) error {
 			// after two failed attempts, start succeeding
 			if o.cnt >= 2 {
 				return nil
@@ -148,6 +149,38 @@ func (b *ControllerSuite) TestRunController(c *C) {
 	c.Assert(ctrl.GetFailureCount(), Equals, 2)
 	c.Assert(ctrl.GetLastError(), IsNil)
 	c.Assert(mngr.RemoveController("test"), IsNil)
+}
+
+func (b *ControllerSuite) TestCancellation(c *C) {
+	mngr := NewManager()
+
+	started := make(chan struct{})
+	cancelled := make(chan struct{})
+
+	mngr.UpdateController("test", ControllerParams{
+		DoFunc: func(ctx context.Context) error {
+			close(started)
+			<-ctx.Done()
+			close(cancelled)
+			return nil
+		},
+	})
+
+	// wait for the controller to be running
+	select {
+	case <-started:
+	case <-time.After(time.Minute):
+		c.Fatalf("timeout while waiting for controller to start")
+	}
+
+	mngr.RemoveAll()
+
+	// wait for the controller to be cancelled
+	select {
+	case <-cancelled:
+	case <-time.After(time.Minute):
+		c.Fatalf("timeout while waiting for controller to be cancelled")
+	}
 }
 
 func (b *ControllerSuite) TestWaitForTermination(c *C) {

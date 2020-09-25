@@ -9,15 +9,35 @@ traditional networking and security services as well as Layer 7 to protect and
 secure use of modern application protocols such as HTTP, gRPC and Kafka. Cilium
 is integrated into common orchestration frameworks such as Kubernetes and Mesos.
 
-A new Linux kernel technology called BPF is at the foundation of Cilium. It
-supports dynamic insertion of BPF bytecode into the Linux kernel at various
+A new Linux kernel technology called eBPF_ is at the foundation of Cilium. It
+supports dynamic insertion of eBPF bytecode into the Linux kernel at various
 integration points such as: network IO, application sockets, and tracepoints to
-implement security, networking and visibility logic. BPF is highly efficient
-and flexible. To learn more about BPF, read more in our extensive
-`BPF and XDP Reference Guide`_.
+implement security, networking and visibility logic. eBPF is highly efficient
+and flexible. To learn more about eBPF, visit `eBPF.io`_.
 
-.. image:: https://cdn.rawgit.com/cilium/cilium/master/Documentation/images/cilium-arch.png
+.. image:: https://cdn.rawgit.com/cilium/cilium/master/Documentation/images/cilium_overview.png
     :align: center
+
+Stable Releases
+===============
+
+The Cilium community maintains minor stable releases for the last three major
+Cilium versions. Older Cilium stable versions from major releases prior to that
+are considered EOL.
+
+For upgrades to new major releases please consult the `Cilium Upgrade Guide
+<https://docs.cilium.io/en/stable/install/upgrade/>`_.
+
+Listed below are the actively maintained release branches along with their latest
+minor release, corresponding image pull tags and their release notes:
+
++-------------------------------------------------------+------------+--------------------------------------+---------------------------------------------------------------------------+------------------------------------------------------------------------+
+| `v1.8 <https://github.com/cilium/cilium/tree/v1.8>`__ | 2020-09-04 | ``docker.io/cilium/cilium:v1.8.3``   | `Release Notes <https://github.com/cilium/cilium/releases/tag/v1.8.3>`__  | `General Announcement <https://cilium.io/blog/2020/06/22/cilium-18>`__ |
++-------------------------------------------------------+------------+--------------------------------------+---------------------------------------------------------------------------+------------------------------------------------------------------------+
+| `v1.7 <https://github.com/cilium/cilium/tree/v1.7>`__ | 2020-09-01 | ``docker.io/cilium/cilium:v1.7.9``   | `Release Notes <https://github.com/cilium/cilium/releases/tag/v1.7.9>`__  | `General Announcement <https://cilium.io/blog/2020/02/18/cilium-17>`__ |
++-------------------------------------------------------+------------+--------------------------------------+---------------------------------------------------------------------------+------------------------------------------------------------------------+
+| `v1.6 <https://github.com/cilium/cilium/tree/v1.6>`__ | 2020-08-03 | ``docker.io/cilium/cilium:v1.6.11``  | `Release Notes <https://github.com/cilium/cilium/releases/tag/v1.6.11>`__ | `General Announcement <https://cilium.io/blog/2019/08/20/cilium-16>`__ |
++-------------------------------------------------------+------------+--------------------------------------+---------------------------------------------------------------------------+------------------------------------------------------------------------+
 
 Functionality Overview
 ======================
@@ -77,7 +97,7 @@ coordination between hosts.
 
 The following multi node networking models are supported:
 
-* **Overlay:** Encapsulation based virtual network spawning all hosts.
+* **Overlay:** Encapsulation-based virtual network spanning all hosts.
   Currently VXLAN and Geneve are baked in but all encapsulation formats
   supported by Linux can be enabled.
 
@@ -102,7 +122,7 @@ Load balancing
 --------------
 
 Distributed load balancing for traffic between application containers and to
-external services. The loadbalancing is implemented using BPF using efficient
+external services. The loadbalancing is implemented using eBPF using efficient
 hashtables allowing for almost unlimited scale and supports direct server
 return (DSR) if the loadbalancing operation is not performed on the source
 host.
@@ -129,6 +149,12 @@ tooling to provide:
 
 - Metrics export via Prometheus: Key metrics are exported via Prometheus for
   integration with your existing dashboards.
+
+- Hubble_: An observability platform specifically written for Cilium. It
+  provides service dependency maps, operational monitoring and alerting,
+  and application and security visibility based on flow logs.
+
+.. _Hubble: https://github.com/cilium/hubble/
 
 Integrations
 ------------
@@ -201,50 +227,8 @@ performance packet processor in the Linux kernel networking data path.
 Further information about BPF and XDP targeted for developers can be found in
 the `BPF and XDP Reference Guide`_.
 
-
-Further Reading
-===============
-
-.. further-reading-begin
-
-Related Material
-----------------
-
-* `k8s-snowflake: Configs and scripts for bootstrapping an opinionated
-  Kubernetes cluster anywhere using Cilium plugin
-  <https://github.com/jessfraz/k8s-snowflake>`_
-* `Using Cilium for NetworkPolicy: Kubernetes documentation on how to use Cilium
-  to implement NetworkPolicy
-  <https://kubernetes.io/docs/tasks/administer-cluster/cilium-network-policy/>`_
-
-Presentations
--------------
-
-* DockerCon, Austin TX, Apr 2017 - Cilium - Network and Application Security with BPF and XDP: `Slides
-  <https://www.slideshare.net/ThomasGraf5/dockercon-2017-cilium-network-and-application-security-with-bpf-and-xdp>`__, `Video <https://www.youtube.com/watch?v=ilKlmTDdFgk>`__
-* CNCF/KubeCon Meetup, Berlin, Mar 2017 - Linux Native, HTTP Aware Network Security:
-  `Slides <https://www.slideshare.net/ThomasGraf5/linux-native-http-aware-network-security>`__, `Video <https://www.youtube.com/watch?v=Yf_INdTWIHI>`__
-* Docker Distributed Systems Summit, Berlin, Oct 2016:
-  `Slides <http://www.slideshare.net/Docker/cilium-bpf-xdp-for-containers-66969823>`__, `Video <https://www.youtube.com/watch?v=TnJF7ht3ZYc&list=PLkA60AVN3hh8oPas3cq2VA9xB7WazcIgs&index=7>`__
-* NetDev1.2, Tokyo, Sep 2016 - cls_bpf/eBPF updates since netdev 1.1: `Slides <http://borkmann.ch/talks/2016_tcws.pdf>`__, `Video <https://youtu.be/gwzaKXWIelc?t=12m55s>`__
-* NetDev1.2, Tokyo, Sep 2016 - Advanced programmability and recent updates with tc’s cls_bpf: `Slides <http://borkmann.ch/talks/2016_netdev2.pdf>`__, `Video <https://www.youtube.com/watch?v=GwT9hRiqdUo>`__
-* ContainerCon NA, Toronto, Aug 2016 - Fast IPv6 container networking with BPF & XDP: `Slides <http://www.slideshare.net/ThomasGraf5/cilium-fast-ipv6-container-networking-with-bpf-and-xdp>`__
-
-Podcasts
---------
-
-* Software Gone Wild by Ivan Pepelnjak, Oct 2016: `Blog <http://blog.ipspace.net/2016/10/fast-linux-packet-forwarding-with.html>`__, `MP3 <http://media.blubrry.com/ipspace/stream.ipspace.net/nuggets/podcast/Show_64-Cilium_with_Thomas_Graf.mp3>`__
-* OVS Orbit by Ben Pfaff, May 2016: `Blog <https://ovsorbit.benpfaff.org/#e4>`__, `MP3 <https://ovsorbit.benpfaff.org/episode-4.mp3>`__
-
-Community blog posts
---------------------
-
-* `Cilium for Network and Application Security with BPF and XDP, Apr 2017
-  <https://blog.scottlowe.org/2017/04/18/black-belt-cilium/>`_
-* `Cilium, BPF and XDP, Google Open Source Blog, Nov 2016
-  <https://opensource.googleblog.com/2016/11/cilium-networking-and-security.html>`_
-
-.. further-reading-end
+To know more about Cilium, it's extensions and use cases around Cilium and BPF
+take a look at `Further Readings <FURTHER_READINGS.rst>`_ section.
 
 Community
 =========
@@ -266,8 +250,8 @@ Weekly Developer meeting
 ------------------------
 * The developer community is hanging out on zoom on a weekly basis to chat.
   Everybody is welcome.
-* Weekly, Monday, 9:00 am PT, 12:00 pm (noon) ET, 6:00 pm CEST
-* `Join zoom <https://zoom.us/j/328820525>`_
+* Weekly, Monday, 8:00 am PT, 11:00 am ET, 5:00 pm CEST
+* `Join zoom <https://zoom.us/j/596609673>`_
 
 License
 =======
@@ -279,11 +263,13 @@ under the `General Public License, Version 2.0 <bpf/COPYING>`_.
 .. _`Why Cilium?`: http://docs.cilium.io/en/stable/intro/#why-cilium
 .. _`Getting Started`: http://docs.cilium.io/en/stable/gettingstarted/
 .. _`Architecture and Concepts`: http://docs.cilium.io/en/stable/concepts/
-.. _`Installing Cilium`: http://docs.cilium.io/en/stable/install/guides/
+.. _`Installing Cilium`: http://docs.cilium.io/en/stable/gettingstarted/#installation
 .. _`Frequently Asked Questions`: https://github.com/cilium/cilium/issues?utf8=%E2%9C%93&q=is%3Aissue+label%3Akind%2Fquestion+
-.. _Contributing: http://docs.cilium.io/en/stable/contributing
+.. _Contributing: http://docs.cilium.io/en/stable/contributing/development/
 .. _Prerequisites: http://docs.cilium.io/en/doc-1.0/install/system_requirements
 .. _`BPF and XDP Reference Guide`: http://docs.cilium.io/en/stable/bpf/
+.. _`eBPF`: https://ebpf.io
+.. _`eBPF.io`: https://ebpf.io
 
 .. |logo| image:: https://cdn.rawgit.com/cilium/cilium/master/Documentation/images/logo.svg
     :alt: Cilium Logo

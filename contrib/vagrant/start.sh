@@ -33,9 +33,9 @@ export 'IPV6_INTERNAL_CIDR'=${IPV4+"FD01::"}
 #   worker 1: FD02::1:0:0/96
 export 'CILIUM_IPV6_NODE_CIDR'=${CILIUM_IPV6_NODE_CIDR:-"FD02::"}
 # VM memory
-export 'VM_MEMORY'=${MEMORY:-4096}
+export 'VM_MEMORY'=${VM_MEMORY:-4096}
 # Number of CPUs
-export 'VM_CPUS'=${CPUS:-2}
+export 'VM_CPUS'=${VM_CPUS:-2}
 # VM_BASENAME tag is only set if K8S option is active
 export 'VM_BASENAME'="runtime"
 export 'VM_BASENAME'=${K8S+"k8s"}
@@ -50,6 +50,9 @@ export 'YES_TO_ALL'=${YES_TO_ALL:-"0"}
 export 'CILIUM_SCRIPT'=true
 # Sets the directory where the temporary setup scripts are created
 export 'CILIUM_TEMP'="${dir}"
+
+# Sets VM's Command wget with HTTPS_PROXY
+export 'VM_PROXY'="${VM_SET_PROXY}"
 
 # Sets the RELOAD env variable with 1 if there is any VM printed by
 # vagrant status.
@@ -90,7 +93,11 @@ function write_netcfg_header(){
     filename="${3}"
     cat <<EOF > "${filename}"
 #!/usr/bin/env bash
+set -o errexit
+set -o nounset
+set -o pipefail
 
+K8S=${K8S:-}
 if [ -n "${K8S}" ]; then
     export K8S="1"
 fi
@@ -172,8 +179,9 @@ function write_k8s_header(){
     filename="${2}"
     cat <<EOF > "${filename}"
 #!/usr/bin/env bash
-
-set -e
+set -o errexit
+set -o nounset
+set -o pipefail
 
 # K8s installation
 sudo apt-get -y install curl
@@ -211,7 +219,7 @@ function write_k8s_install() {
 
     cat <<EOF >> "${filename}"
 # K8s
-k8s_path="/home/vagrant/go/src/github.com/cilium/cilium/examples/kubernetes-ingress/scripts"
+k8s_path="/home/vagrant/go/src/github.com/cilium/cilium/contrib/vagrant/scripts"
 export IPV6_EXT="${IPV6_EXT}"
 export K8S_CLUSTER_CIDR="${k8s_cluster_cidr}"
 export K8S_NODE_CIDR_MASK_SIZE="${k8s_node_cidr_mask_size}"
@@ -219,9 +227,16 @@ export K8S_SERVICE_CLUSTER_IP_RANGE="${k8s_service_cluster_ip_range}"
 export K8S_CLUSTER_API_SERVER_IP="${k8s_cluster_api_server_ip}"
 export K8S_CLUSTER_DNS_IP="${k8s_cluster_dns_ip}"
 export RUNTIME="${RUNTIME}"
-# Only do installation if RELOAD is not set
+export INSTALL="${INSTALL}"
+# Always do installation if RELOAD is not set
 if [ -z "${RELOAD}" ]; then
     export INSTALL="1"
+fi
+
+if [ -n "${VM_PROXY}" ]; then
+    export WGET="HTTPS_PROXY=${VM_PROXY} wget"
+else
+    export WGET="wget"
 fi
 export ETCD_CLEAN="${ETCD_CLEAN}"
 
@@ -245,8 +260,12 @@ EOF
 
     cat <<EOF > "${filename_2nd_half}"
 #!/usr/bin/env bash
+set -o errexit
+set -o nounset
+set -o pipefail
+
 # K8s installation 2nd half
-k8s_path="/home/vagrant/go/src/github.com/cilium/cilium/examples/kubernetes-ingress/scripts"
+k8s_path="/home/vagrant/go/src/github.com/cilium/cilium/contrib/vagrant/scripts"
 export IPV6_EXT="${IPV6_EXT}"
 export K8S_CLUSTER_CIDR="${k8s_cluster_cidr}"
 export K8S_NODE_CIDR_MASK_SIZE="${k8s_node_cidr_mask_size}"
@@ -256,9 +275,16 @@ export K8S_CLUSTER_DNS_IP="${k8s_cluster_dns_ip}"
 export RUNTIME="${RUNTIME}"
 export K8STAG="${VM_BASENAME}"
 export NWORKERS="${NWORKERS}"
-# Only do installation if RELOAD is not set
+export INSTALL="${INSTALL}"
+# Always do installation if RELOAD is not set
 if [ -z "${RELOAD}" ]; then
     export INSTALL="1"
+fi
+
+if [ -n "${VM_PROXY}" ]; then
+    export WGET="HTTPS_PROXY=${VM_PROXY} wget"
+else
+    export WGET="wget"
 fi
 export ETCD_CLEAN="${ETCD_CLEAN}"
 
@@ -278,7 +304,8 @@ function write_cilium_cfg() {
     ipv6_addr="${3}"
     filename="${4}"
 
-    cilium_options="--auto-ipv6-node-routes"
+    cilium_options=" --debug --pprof --enable-hubble --hubble-listen-address :4244 --enable-k8s-event-handover --k8s-require-ipv4-pod-cidr --auto-direct-node-routes"
+    cilium_operator_options=" --debug"
 
     if [[ "${IPV4}" -eq "1" ]]; then
         if [[ -z "${K8S}" ]]; then
@@ -288,58 +315,40 @@ function write_cilium_cfg() {
         cilium_options+=" --enable-ipv4=false"
     fi
 
+    cilium_options+=" --enable-ipv6-ndp"
+    cilium_options+=" --ipv6-mcast-device enp0s8"
+
     if [ -n "${K8S}" ]; then
         cilium_options+=" --k8s-kubeconfig-path /var/lib/cilium/cilium.kubeconfig"
         cilium_options+=" --kvstore etcd"
         cilium_options+=" --kvstore-opt etcd.config=/var/lib/cilium/etcd-config.yml"
+        cilium_operator_options+=" --k8s-kubeconfig-path /var/lib/cilium/cilium.kubeconfig"
+        cilium_operator_options+=" --kvstore etcd"
+        cilium_operator_options+=" --kvstore-opt etcd.config=/var/lib/cilium/etcd-config.yml"
+        cilium_operator_options+=" --cluster-pool-ipv4-cidr=10.${master_ipv4_suffix}.0.0/16"
+        cilium_operator_options+=" --cluster-pool-ipv6-cidr=fd00::/104"
     else
         if [[ "${IPV4}" -eq "1" ]]; then
             cilium_options+=" --kvstore-opt consul.address=${MASTER_IPV4}:8500"
+            cilium_operator_options+=" --kvstore-opt consul.address=${MASTER_IPV4}:8500"
         else
             cilium_options+=" --kvstore-opt consul.address=[${ipv6_addr}]:8500"
+            cilium_operator_options+=" --kvstore-opt consul.address=[${ipv6_addr}]:8500"
         fi
         cilium_options+=" --kvstore consul"
-    fi
-    # container runtime options
-    case "${RUNTIME}" in
-        "containerd" | "containerD")
-            cilium_options+=" --container-runtime=containerd --container-runtime-endpoint=containerd=/var/run/containerd/containerd.sock"
-            cat <<EOF >> "$filename"
-sed -i '4s+.*++' /lib/systemd/system/cilium.service
-EOF
-            ;;
-        "crio" | "cri-o")
-            cilium_options+=" --container-runtime=crio --container-runtime-endpoint=crio=/var/run/crio/crio.sock"
-            ;;
-        *)
-            cilium_options+=" --container-runtime=docker --container-runtime-endpoint=docker=unix:///var/run/docker.sock"
-            ;;
-    esac
-
-
-    if [ "$LB" = 1 ]; then
-        # The LB interface needs to be the "exposed" to the host
-        # interface only for master node.
-        # FIXME GH-1054
-#        if [ $((node_index)) -eq 1 ]; then
-#            ubuntu_1604_interface="-d enp0s9"
-#            ubuntu_1604_cilium_lb="--lb enp0s9"
-#        else
-            ubuntu_1604_interface="-d enp0s9"
-            ubuntu_1604_cilium_lb=""
-#        fi
-    else
-        cilium_options+=" ${TUNNEL_MODE_STRING}"
+        cilium_operator_options+=" --kvstore consul"
     fi
 
-    cilium_options+=" --access-log=/var/log/cilium-access.log"
+    cilium_options+=" ${TUNNEL_MODE_STRING}"
 
 cat <<EOF >> "$filename"
 sleep 2s
-sed -i '10s+.*+ExecStart=/usr/bin/cilium-agent --debug \$CILIUM_OPTS+' /lib/systemd/system/cilium.service
-echo "K8S_NODE_NAME=\$(hostname)" >> /etc/sysconfig/cilium
-echo 'CILIUM_OPTS="${ubuntu_1604_cilium_lb} ${ubuntu_1604_interface} ${cilium_options}"' >> /etc/sysconfig/cilium
-echo 'PATH=/usr/local/clang/bin:/usr/local/sbin:/usr/local/bin:/usr/bin:/usr/sbin:/sbin:/bin' >> /etc/sysconfig/cilium
+if [ -n "\${K8S}" ]; then
+    echo "K8S_NODE_NAME=\$(hostname)" >> /etc/sysconfig/cilium
+fi
+echo 'CILIUM_OPTS="${cilium_options}"' >> /etc/sysconfig/cilium
+echo 'CILIUM_OPERATOR_OPTS="${cilium_operator_options}"' >> /etc/sysconfig/cilium
+echo 'PATH=/usr/local/sbin:/usr/local/bin:/usr/bin:/usr/sbin:/sbin:/bin' >> /etc/sysconfig/cilium
 chmod 644 /etc/sysconfig/cilium
 
 # Wait for the node to have a podCIDR so that cilium can use the podCIDR
@@ -355,27 +364,9 @@ if [ -n "\${K8S}" ]; then
     done
 fi
 
+systemctl daemon-reload
 service cilium restart
-
-cilium_started=false
-
-for ((i = 0 ; i < 24; i++)); do
-    if cilium status > /dev/null 2>&1; then
-        cilium_started=true
-        break
-    fi
-    sleep 5s
-    echo "Waiting for Cilium daemon to come up..."
-done
-
-if [ "\$cilium_started" = true ] ; then
-    echo 'Cilium successfully started!'
-else
-    >&2 echo 'Timeout waiting for Cilium to start...'
-    journalctl -u cilium.service --since \$(systemctl show -p ActiveEnterTimestamp cilium.service | awk '{print \$2 \$3}')
-    >&2 echo 'Cilium failed to start'
-    exit 1
-fi
+/home/vagrant/go/src/github.com/cilium/cilium/test/provision/wait-cilium.sh
 EOF
 }
 
@@ -389,6 +380,7 @@ function create_master(){
         write_nodes_routes 1 "${MASTER_IPV4}" "${output_file}"
     fi
 
+    echo "service cilium-operator restart" >> ${output_file}
     write_cilium_cfg 1 "${ipv4_array[3]}" "${master_cilium_ipv6}" "${output_file}"
 }
 
@@ -442,9 +434,9 @@ function set_vagrant_env(){
     if [[ -n "${NFS}" ]]; then
         echo "# NFS enabled. don't forget to enable this ports on your host"
         echo "# before starting the VMs in order to have nfs working"
-        echo "# iptables -I INPUT -p udp -s ${IPV4_BASE_ADDR_NFS}0/24 --dport 111 -j ACCEPT"
-        echo "# iptables -I INPUT -p udp -s ${IPV4_BASE_ADDR_NFS}0/24 --dport 2049 -j ACCEPT"
-        echo "# iptables -I INPUT -p udp -s ${IPV4_BASE_ADDR_NFS}0/24 --dport 20048 -j ACCEPT"
+        echo "# iptables -I INPUT -p tcp -s ${IPV4_BASE_ADDR_NFS}0/24 --dport 111 -j ACCEPT"
+        echo "# iptables -I INPUT -p tcp -s ${IPV4_BASE_ADDR_NFS}0/24 --dport 2049 -j ACCEPT"
+        echo "# iptables -I INPUT -p tcp -s ${IPV4_BASE_ADDR_NFS}0/24 --dport 20048 -j ACCEPT"
     fi
 
     temp=$(printf " %s" "${ipv6_public_workers_addrs[@]}")
@@ -603,17 +595,20 @@ create_k8s_config
 
 cd "${dir}/../.."
 
+PROVISION_ARGS=""
+if [ -n "${NO_PROVISION}" ]; then
+    PROVISION_ARGS="--no-provision"
+fi
 if [ -n "${RELOAD}" ]; then
-    vagrant reload
-elif [ -n "${NO_PROVISION}" ]; then
-    vagrant up --no-provision
+    vagrant reload $PROVISION_ARGS $1
 elif [ -n "${PROVISION}" ]; then
-    vagrant provision
+    vagrant provision $1
 else
-    vagrant up
-    if [ -n "${K8S}" ]; then
-		vagrant ssh k8s1 -- cat /home/vagrant/.kube/config | sed 's;server:.*:6443;server: https://k8s1:7443;g' > vagrant.kubeconfig
-		echo "Add '127.0.0.1 k8s1' to your /etc/hosts to use vagrant.kubeconfig file for kubectl"
-	fi
+    vagrant up $PROVISION_ARGS $1
+    if [ "$?" -eq "0" -a -n "${K8S}" ]; then
+        host_port=$(vagrant port --guest 6443)
+        vagrant ssh k8s1 -- cat /home/vagrant/.kube/config | sed "s;server:.*:6443;server: https://k8s1:$host_port;g" > vagrant.kubeconfig
+        echo "Add '127.0.0.1 k8s1' to your /etc/hosts to use vagrant.kubeconfig file for kubectl"
+    fi
 fi
 

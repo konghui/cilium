@@ -2,52 +2,49 @@
 
     WARNING: You are looking at unreleased Cilium documentation.
     Please use the official rendered version released here:
-    http://docs.cilium.io
+    https://docs.cilium.io
 
 .. _encryption:
 
-*****************************
-Transparent Encryption (beta)
-*****************************
+************************************
+Transparent Encryption (stable/beta)
+************************************
 
-This guide explains how to configure Cilium to use IPSec based transparent
-encryption using Kubernetes secrets to distribute the IPSec keys. After this
-configuration is complete all traffic between Cilium
-managed endpoints, as well as Cilium managed host traffic, will be encrypted
-using IPSec. This guide uses Kubernetes secrets to distribute keys. Alternatively,
-keys may be manually distributed but that is not shown here.
-
-.. note::
-
-    This is a beta feature. Please provide feedback and file a GitHub issue
-    if you experience any problems.
+This guide explains how to configure Cilium to use IPsec based transparent
+encryption using Kubernetes secrets to distribute the IPsec keys. After this
+configuration is complete all traffic between Cilium-managed endpoints, as well
+as Cilium managed host traffic, will be encrypted using IPsec. This guide uses
+Kubernetes secrets to distribute keys. Alternatively, keys may be manually
+distributed, but that is not shown here.
 
 .. note::
 
-    Transparent encryption is currently subject to the following limitations:
+    The encryption feature is stable in combination with the direct-routing and
+    ENI datapath mode. In combination with encapsulation/tunneling, the feature
+    is still in beta phase.
 
-    * Only works in tunnel mode
-    * Not compatible with the etcd-operator
-    
-    Both limitations will be resolved in 1.4.1.
+.. note::
+
+    Packets destined to the same node they were sent out of are not encrypted.
+    This is a intended behavior as it doesn't provide any benefits because the
+    raw traffic on the node can be seen.
 
 Generate & import the PSK
 =========================
 
-First create a Kubernetes secret for the IPSec keys to be stored.
-This will generate the necessary IPSec keys which will be distributed as a
-Kubernetes secret called ``cilium-ipsec-keys``. In this example we use
-AES-CBC with HMAC-256 (hash based authentication code), but any of the supported
-Linux algorithms may be used. To generate use the following
+First, create a Kubernetes secret for the IPsec keys to be stored. This will
+generate the necessary IPsec keys which will be distributed as a Kubernetes
+secret called ``cilium-ipsec-keys``. In this example we use GMC-128-AES, but
+any of the supported Linux algorithms may be used. To generate, use the
+following:
 
 .. parsed-literal::
 
-    kubectl create -n kube-system secret generic cilium-ipsec-keys \\
-       --from-literal=keys="hmac(sha256) $(echo \`dd if=/dev/urandom count=32 bs=1 2> /dev/null| xxd -p -c 64\`) cbc(aes) $(echo \`dd if=/dev/urandom count=32 bs=1 2> /dev/null| xxd -p -c 64\`)"
+    $ kubectl create -n kube-system secret generic cilium-ipsec-keys \\
+        --from-literal=keys="3 rfc4106(gcm(aes)) $(echo $(dd if=/dev/urandom count=20 bs=1 2> /dev/null| xxd -p -c 64)) 128"
 
-
-The secret can be displayed with 'kubectl -n kube-system get secret' and will be
-listed as 'cilium-ipsec-keys'.
+The secret can be seen with ``kubectl -n kube-system get secret`` and will be
+listed as "cilium-ipsec-keys".
 
 .. parsed-literal::
     $ kubectl -n kube-system get secrets cilium-ipsec-keys
@@ -57,95 +54,64 @@ listed as 'cilium-ipsec-keys'.
 Enable Encryption in Cilium
 ===========================
 
-First step is to download the Cilium Kubernetes descriptor:
+.. include:: k8s-install-download-release.rst
 
-.. tabs::
-  .. group-tab:: K8s 1.13
+Deploy Cilium release via Helm with the following options to enable encryption:
 
-    .. parsed-literal::
+.. parsed-literal::
 
-      curl -LO \ |SCM_WEB|\/examples/kubernetes/1.13/cilium-ds.yaml
+    helm install cilium |CHART_RELEASE| \\
+      --namespace kube-system \\
+      --set global.encryption.enabled=true \\
+      --set global.encryption.nodeEncryption=false
 
-  .. group-tab:: K8s 1.12
+These options can be provided along with other options, such as when deploying
+to GKE, with VXLAN tunneling:
 
-    .. parsed-literal::
+.. parsed-literal::
 
-      curl -LO \ |SCM_WEB|\/examples/kubernetes/1.12/cilium-ds.yaml
+    helm install cilium |CHART_RELEASE| \\
+      --namespace cilium \
+      --set global.nodeinit.enabled=true \
+      --set nodeinit.reconfigureKubelet=true \
+      --set nodeinit.removeCbrBridge=true \
+      --set global.cni.binPath=/home/kubernetes/bin \
+      --set global.tunnel=vxlan \
+      --set global.encryption.enabled=true \
+      --set global.encryption.nodeEncryption=false
 
-  .. group-tab:: K8s 1.11
+At this point the Cilium managed nodes will be using IPsec for all traffic. For further
+information on Cilium's transparent encryption, see :ref:`ebpf_datapath`.
 
-    .. parsed-literal::
+Encryption interface
+--------------------
 
-      curl -LO \ |SCM_WEB|\/examples/kubernetes/1.11/cilium-ds.yaml
-
-  .. group-tab:: K8s 1.10
-
-    .. parsed-literal::
-
-      curl -LO \ |SCM_WEB|\/examples/kubernetes/1.10/cilium-ds.yaml
-
-  .. group-tab:: K8s 1.9
-
-    .. parsed-literal::
-
-      curl -LO \ |SCM_WEB|\/examples/kubernetes/1.9/cilium-ds.yaml
-
-  .. group-tab:: K8s 1.8
-
-    .. parsed-literal::
-
-      curl -LO \ |SCM_WEB|\/examples/kubernetes/1.8/cilium-ds.yaml
-
-You can also use your existing definition DaemonSet running in your cluster:
+If direct routing is being used, an additional argument can be used to identify
+the network-facing interface. If no interface is specified, the default route
+link is chosen by inspecting the routing tables. This will work in many cases,
+but depending on routing rules, users may need to specify the encryption
+interface as follows:
 
 .. code:: bash
 
-    kubectl -n kube-system get ds cilium -o yaml > cilium-ds.yaml
+    --set global.encryption.interface=ethX
 
-To enable encryption in Cilium, we use a patch file to update the configuration
-with the required cilium-agent options and included IPSec keys.
+Node to node encryption
+-----------------------
 
-.. parsed-literal::
-  metadata:
-    namespace: kube-system
-  spec:
-    template:
-      spec:
-        containers:
-        - name: cilium-agent
-          args:
-          - "--debug=$(CILIUM_DEBUG)"
-          - "--kvstore=etcd"
-          - "--kvstore-opt=etcd.config=/var/lib/etcd-config/etcd.config"
-          - "--enable-ipsec"
-          - "--ipsec-key-file=/etc/ipsec/keys"
-          volumeMounts:
-            - name: cilium-ipsec-secrets
-              mountPath: /etc/ipsec
-        volumes:
-        - name: cilium-ipsec-secrets
-          secret:
-            secretName: cilium-ipsec-keys
+In order to enable node-to-node encryption, add:
 
-The above shows the ``cilium-ipsec.yaml`` used with the following ``kubectl
-patch`` command:
+.. code:: bash
 
-.. parsed-literal::
-  kubectl patch --filename='cilium-ds.yaml' --patch "$(cat cilium-ipsec.yaml)" --local -o yaml > cilium-ipsec-ds.yaml
-
-Finally, apply the file,
-
-.. parsed-literal::
-  kubectl apply -f cilium-ipsec-ds.yaml
-
-At this point the Cilium managed nodes will be using IPSec for all traffic. For further
-information on Cilium's transparent encryption, see :ref:`arch_guide`.
+    [...]
+    --set global.encryption.enabled=true \
+    --set global.encryption.nodeEncryption=true
 
 Validate the Setup
 ==================
 
-Run a ``bash`` shell in one of the Cilium pods with ``kubectl -n kube-system
-exec -ti cilium-7cpsm -- bash`` and execute the following commands:
+Run a ``bash`` shell in one of the Cilium pods with ``kubectl -n <k8s namespace>
+exec -ti <cilium pod> -- bash`` and execute the following commands:
 
 1. Install tcpdump
 
@@ -169,12 +135,34 @@ exec -ti cilium-7cpsm -- bash`` and execute the following commands:
     15:16:21.627699 IP 10.60.1.1 > 10.60.0.1: ESP(spi=0x00000001,seq=0x57e4), length 100
     15:16:21.628408 IP 10.60.1.1 > 10.60.0.1: ESP(spi=0x00000001,seq=0x57e5), length 100
 
+Key Rotation
+============
+
+To replace cilium-ipsec-keys secret with a new keys,
+
+.. code-block:: shell-session
+
+    KEYID=$(kubectl get secret -n kube-system cilium-ipsec-keys -o yaml|grep keys: | awk '{print $2}' | base64 -d | awk '{print $1}')
+    if [[ $KEYID -gt 15 ]]; then KEYID=0; fi
+    data=$(echo "{\"stringData\":{\"keys\":\"$((($KEYID+1))) "rfc4106\(gcm\(aes\)\)" $(echo $(dd if=/dev/urandom count=20 bs=1 2> /dev/null| xxd -p -c 64)) 128\"}}")
+    kubectl patch secret -n kube-system cilium-ipsec-keys -p="${data}" -v=1
+
+Then restart Cilium agents to transition to the new key. During transition the
+new and old keys will be in use. The Cilium agent keeps per endpoint data on
+which key is used by each endpoint and will use the correct key if either side
+has not yet been updated. In this way encryption will work as new keys are
+rolled out.
+
+The KEYID environment variable in the above example stores the current key ID
+used by Cilium. The key variable is a uint8 with value between 0-16 and should
+be monotonically increasing every re-key with a rollover from 16 to 0. The
+Cilium agent will default to KEYID of zero if its not specified in the secret.
 
 Troubleshooting
 ===============
 
  * Make sure that the Cilium pods have kvstore connectivity:
-   
+
    .. code:: bash
 
       cilium status
@@ -183,18 +171,18 @@ Troubleshooting
 
  * Check for ``level=warning`` and ``level=error`` messages in the Cilium log files
  * Run a ``bash`` in a Cilium and validate the following:
- 
+
    * Routing rules matching on fwmark:
 
      .. code:: bash
-        
+
         ip rule list
         1:	from all fwmark 0xd00/0xf00 lookup 200
         1:	from all fwmark 0xe00/0xf00 lookup 200
         [...]
 
    * Content of routing table 200
-   
+
      .. code:: bash
 
         ip route list table 200
@@ -245,5 +233,5 @@ Troubleshooting
 Disabling Encryption
 ====================
 
-To disable the encryption, edit the DaemonSet and remove the ``--enable-ipsec``
-argument.
+To disable the encryption, regenerate the YAML with the option
+``global.encryption.enabled=false``

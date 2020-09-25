@@ -1,4 +1,4 @@
-// Copyright 2017-2018 Authors of Cilium
+// Copyright 2017-2019 Authors of Cilium
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -47,32 +47,53 @@ func defaultCommands(confDir string, cmdDir string, k8sPods []string) []string {
 		"ps auxfw",
 		"hostname",
 		"ip a",
-		"ip r",
-		"ip link",
+		"ip -4 r",
+		"ip -6 r",
+		"ip -d -s l",
+		"ip -4 n",
+		"ip -6 n",
+		"ss -t -p -a -i -s",
+		"ss -u -p -a -i -s",
+		"tc qdisc show",
+		"tc -d -s qdisc show",
 		"uname -a",
-		"dig",
-		"netstat -a",
-		"pidstat",
-		"arp",
 		"top -b -n 1",
 		"uptime",
 		"dmesg --time-format=iso",
+		"sysctl -a",
 		"bpftool map show",
 		"bpftool prog show",
-		// Versions
-		"docker version",
-		"docker info",
-		// Docker and Kubernetes logs from systemd
-		"journalctl -u cilium*",
-		"journalctl -u kubelet",
+		// LB and CT map for debugging services; using bpftool for a reliable dump
+		"bpftool map dump pinned /sys/fs/bpf/tc/globals/cilium_lb4_services_v2",
+		"bpftool map dump pinned /sys/fs/bpf/tc/globals/cilium_lb4_services",
+		"bpftool map dump pinned /sys/fs/bpf/tc/globals/cilium_lb4_backends",
+		"bpftool map dump pinned /sys/fs/bpf/tc/globals/cilium_lb4_reverse_nat",
+		"bpftool map dump pinned /sys/fs/bpf/tc/globals/cilium_ct4_global",
+		"bpftool map dump pinned /sys/fs/bpf/tc/globals/cilium_ct_any4_global",
+		"bpftool map dump pinned /sys/fs/bpf/tc/globals/cilium_lb4_affinity",
+		"bpftool map dump pinned /sys/fs/bpf/tc/globals/cilium_lb6_affinity",
+		"bpftool map dump pinned /sys/fs/bpf/tc/globals/cilium_lb_affinity_match",
+		"bpftool map dump pinned /sys/fs/bpf/tc/globals/cilium_lb6_services_v2",
+		"bpftool map dump pinned /sys/fs/bpf/tc/globals/cilium_lb6_services",
+		"bpftool map dump pinned /sys/fs/bpf/tc/globals/cilium_lb6_backends",
+		"bpftool map dump pinned /sys/fs/bpf/tc/globals/cilium_lb6_reverse_nat",
+		"bpftool map dump pinned /sys/fs/bpf/tc/globals/cilium_ct6_global",
+		"bpftool map dump pinned /sys/fs/bpf/tc/globals/cilium_ct_any6_global",
+		"bpftool map dump pinned /sys/fs/bpf/tc/globals/cilium_snat_v4_external",
+		"bpftool map dump pinned /sys/fs/bpf/tc/globals/cilium_snat_v6_external",
 		// iptables
-		"iptables-save",
+		"iptables-save -c",
 		"iptables -S",
 		"ip6tables -S",
 		"iptables -L -v",
 		"ip rule",
 		"ip -4 route show table 2005",
 		"ip -6 route show table 2005",
+		"ip -4 route show table 200",
+		"ip -6 route show table 200",
+		// xfrm
+		"ip xfrm policy",
+		"ip -s xfrm state | awk '!/auth|enc|aead|auth-trunc|comp/'",
 		// gops
 		fmt.Sprintf("gops memstats $(pidof %s)", components.CiliumAgentName),
 		fmt.Sprintf("gops stack $(pidof %s)", components.CiliumAgentName),
@@ -125,6 +146,7 @@ func loadConfigFile(path string) (*BugtoolConfiguration, error) {
 
 func catCommands() []string {
 	files := []string{
+		"/proc/net/xfrm_stat",
 		"/proc/sys/net/core/bpf_jit_enable",
 		"/proc/kallsyms",
 		"/etc/resolv.conf",
@@ -212,17 +234,25 @@ func copyCiliumInfoCommands(cmdDir string, k8sPods []string) []string {
 		"cilium metrics list",
 		"cilium fqdn cache list",
 		"cilium config",
+		"cilium bpf bandwidth list",
 		"cilium bpf tunnel list",
 		"cilium bpf lb list",
 		"cilium bpf endpoint list",
 		"cilium bpf ct list global",
-		"cilium bpf proxy list",
+		"cilium bpf nat list",
+		"cilium bpf ipmasq list",
 		"cilium bpf ipcache list",
 		"cilium bpf policy get --all --numeric",
+		"cilium bpf sha list",
+		"cilium bpf fs show",
+		"cilium ip list -o json",
 		"cilium map list --verbose",
+		"cilium service list",
 		"cilium status --verbose",
 		"cilium identity list",
 		"cilium-health status",
+		"cilium policy selectors -o json",
+		"cilium node list",
 	}
 	var commands []string
 
@@ -263,6 +293,7 @@ func k8sCommands(allCommands []string, pods []string) []string {
 		"kubectl describe nodes",
 		"kubectl get pods,svc --all-namespaces",
 		"kubectl version",
+		fmt.Sprintf("kubectl get cm cilium-config -n %s", k8sNamespace),
 	}
 
 	// Prepare to run all the commands inside of the pod(s)

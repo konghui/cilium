@@ -19,9 +19,13 @@ package ctmap
 import (
 	"strings"
 	"testing"
+	"time"
 	"unsafe"
 
+	"github.com/cilium/cilium/pkg/bpf"
+	"github.com/cilium/cilium/pkg/defaults"
 	"github.com/cilium/cilium/pkg/option"
+	"github.com/cilium/cilium/pkg/tuple"
 
 	. "gopkg.in/check.v1"
 )
@@ -36,15 +40,15 @@ func Test(t *testing.T) {
 }
 
 func (t *CTMapTestSuite) TestInit(c *C) {
-	InitMapInfo(option.CTMapEntriesGlobalTCPDefault, option.CTMapEntriesGlobalAnyDefault)
-	for mapType := MapType(0); mapType < MapTypeMax; mapType++ {
+	InitMapInfo(option.CTMapEntriesGlobalTCPDefault, option.CTMapEntriesGlobalAnyDefault, true, true)
+	for mapType := mapType(0); mapType < mapTypeMax; mapType++ {
 		info := mapInfo[mapType]
 		if mapType.isIPv6() {
-			c.Assert(info.keySize, Equals, int(unsafe.Sizeof(CtKey6{})))
+			c.Assert(info.keySize, Equals, int(unsafe.Sizeof(tuple.TupleKey6{})))
 			c.Assert(strings.Contains(info.bpfDefine, "6"), Equals, true)
 		}
 		if mapType.isIPv4() {
-			c.Assert(info.keySize, Equals, int(unsafe.Sizeof(CtKey4{})))
+			c.Assert(info.keySize, Equals, int(unsafe.Sizeof(tuple.TupleKey4{})))
 			c.Assert(strings.Contains(info.bpfDefine, "4"), Equals, true)
 		}
 		if mapType.isTCP() {
@@ -53,7 +57,7 @@ func (t *CTMapTestSuite) TestInit(c *C) {
 			c.Assert(strings.Contains(info.bpfDefine, "ANY"), Equals, true)
 		}
 		if mapType.isLocal() {
-			c.Assert(info.maxEntries, Equals, MapNumEntriesLocal)
+			c.Assert(info.maxEntries, Equals, mapNumEntriesLocal)
 		}
 		if mapType.isGlobal() {
 			if mapType.isTCP() {
@@ -63,4 +67,22 @@ func (t *CTMapTestSuite) TestInit(c *C) {
 			}
 		}
 	}
+}
+
+func (t *CTMapTestSuite) TestCalculateInterval(c *C) {
+	c.Assert(calculateInterval(bpf.MapTypeLRUHash, time.Minute, 0.1), Equals, time.Minute)  // no change
+	c.Assert(calculateInterval(bpf.MapTypeLRUHash, time.Minute, 0.2), Equals, time.Minute)  // no change
+	c.Assert(calculateInterval(bpf.MapTypeLRUHash, time.Minute, 0.25), Equals, time.Minute) // no change
+
+	c.Assert(calculateInterval(bpf.MapTypeLRUHash, time.Minute, 0.40), Equals, 36*time.Second)
+	c.Assert(calculateInterval(bpf.MapTypeLRUHash, time.Minute, 0.60), Equals, 24*time.Second)
+
+	c.Assert(calculateInterval(bpf.MapTypeLRUHash, 10*time.Second, 0.01), Equals, 15*time.Second)
+	c.Assert(calculateInterval(bpf.MapTypeLRUHash, 10*time.Second, 0.04), Equals, 15*time.Second)
+
+	c.Assert(calculateInterval(bpf.MapTypeLRUHash, 1*time.Second, 0.9), Equals, defaults.ConntrackGCMinInterval)
+	c.Assert(calculateInterval(bpf.MapTypeHash, 1*time.Second, 0.9), Equals, defaults.ConntrackGCMinInterval)
+
+	c.Assert(calculateInterval(bpf.MapTypeLRUHash, 24*time.Hour, 0.01), Equals, defaults.ConntrackGCMaxLRUInterval)
+	c.Assert(calculateInterval(bpf.MapTypeHash, 24*time.Hour, 0.01), Equals, defaults.ConntrackGCMaxInterval)
 }

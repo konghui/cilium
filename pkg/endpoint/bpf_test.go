@@ -1,4 +1,4 @@
-// Copyright 2018 Authors of Cilium
+// Copyright 2019 Authors of Cilium
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -17,85 +17,62 @@
 package endpoint
 
 import (
-	"crypto/md5"
-	"encoding/hex"
+	"bytes"
+	"io"
 	"io/ioutil"
-	"path/filepath"
+	"testing"
 
-	"github.com/cilium/cilium/common"
-
+	"github.com/cilium/cilium/pkg/datapath/linux"
+	"github.com/cilium/cilium/pkg/testutils/allocator"
 	. "gopkg.in/check.v1"
 )
 
-func (s *EndpointSuite) TestHashHeaderfile(c *C) {
-	// Create a line much longer than 4096, the buffer size used by ReadLine.
-	manyBytes := make([]byte, 100000)
-	for i := range manyBytes {
-		manyBytes[i] = 'a'
+func (s *EndpointSuite) TestWriteInformationalComments(c *C) {
+	e := NewEndpointWithState(s, &FakeEndpointProxy{}, &allocator.FakeIdentityAllocator{}, 100, StateWaitingForIdentity)
+
+	var f bytes.Buffer
+	err := e.writeInformationalComments(&f)
+	c.Assert(err, IsNil)
+}
+
+type writeFunc func(io.Writer) error
+
+func BenchmarkWriteHeaderfile(b *testing.B) {
+	e := NewEndpointWithState(&suite, &FakeEndpointProxy{}, &allocator.FakeIdentityAllocator{}, 100, StateWaitingForIdentity)
+	dp := linux.NewDatapath(linux.DatapathConfiguration{}, nil)
+
+	targetComments := func(w io.Writer) error {
+		return e.writeInformationalComments(w)
 	}
-	longString := string(manyBytes)
+	targetConfig := func(w io.Writer) error {
+		return dp.WriteEndpointConfig(w, e)
+	}
 
-	dir := c.MkDir()
-	headerPath := filepath.Join(dir, common.CHeaderFileName)
-	var text string
-	var err error
+	var buf bytes.Buffer
+	file, err := ioutil.TempFile("", "cilium_ep_bench_")
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer file.Close()
 
-	text = "ignored long line: " + longString + `
+	benchmarks := []struct {
+		name   string
+		output io.Writer
+		write  writeFunc
+	}{
+		{"in-memory-info", &buf, targetComments},
+		{"in-memory-cfg", &buf, targetConfig},
+		{"to-disk-info", file, targetComments},
+		{"to-disk-cfg", file, targetConfig},
+	}
 
-#line1
-ignored
-  #ignored
-
-#line2
-
-`
-	ioutil.WriteFile(headerPath, []byte(text), 0644)
-
-	hashWriter := md5.New()
-	hash1, err := hashHeaderfile(hashWriter, headerPath)
-	c.Assert(err, IsNil)
-	hashSum := hash1.Sum(nil)
-	hashToString1 := hex.EncodeToString(hashSum[:])
-	c.Assert(hashToString1, Not(Equals), "")
-
-	// Same as above but with all the ignored lines removed.
-	text = `#line1
-#line2`
-	ioutil.WriteFile(headerPath, []byte(text), 0644)
-
-	hashWriter = md5.New()
-	hash2, err := hashHeaderfile(hashWriter, headerPath)
-	hashSum = hash2.Sum(nil)
-	hashToString2 := hex.EncodeToString(hashSum[:])
-	c.Assert(hashToString2, Not(Equals), "")
-	c.Assert(err, IsNil)
-
-	c.Assert(hashToString1, Equals, hashToString2)
-
-	// Only non-ignored lines, including one line that is longer than the ReadLine buffer.
-	text = "#line1\n" +
-		"#line2 " + longString + "\n#line3"
-	ioutil.WriteFile(headerPath, []byte(text), 0644)
-
-	hashWriter = md5.New()
-	hash3, err := hashHeaderfile(hashWriter, headerPath)
-	hashSum = hash3.Sum(nil)
-	hashToString3 := hex.EncodeToString(hashSum[:])
-	c.Assert(hashToString3, Not(Equals), "")
-	c.Assert(err, IsNil)
-
-	// Same as above but with an extra character at the end of the long line.
-	// That character shouldn't be ignored and should result into a different hash.
-	text = "#line1\n" +
-		"#line2 " + longString + "z\n#line3"
-	ioutil.WriteFile(headerPath, []byte(text), 0644)
-
-	hashWriter = md5.New()
-	hash4, err := hashHeaderfile(hashWriter, headerPath)
-	hashSum = hash4.Sum(nil)
-	hashToString4 := hex.EncodeToString(hashSum[:])
-	c.Assert(hashToString4, Not(Equals), "")
-	c.Assert(err, IsNil)
-
-	c.Assert(hashToString3, Not(Equals), hashToString4)
+	for _, bm := range benchmarks {
+		b.Run(bm.name, func(b *testing.B) {
+			for i := 0; i < b.N; i++ {
+				if err := bm.write(bm.output); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
 }

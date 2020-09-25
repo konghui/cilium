@@ -1,4 +1,4 @@
-// Copyright 2017-2018 Authors of Cilium
+// Copyright 2017-2020 Authors of Cilium
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -16,6 +16,14 @@
 
 package v2
 
+// CiliumClusterwideLocalRedirectPolicyListerExpansion allows custom methods to be added to
+// CiliumClusterwideLocalRedirectPolicyLister.
+type CiliumClusterwideLocalRedirectPolicyListerExpansion interface{}
+
+// CiliumClusterwideNetworkPolicyListerExpansion allows custom methods to be added to
+// CiliumClusterwideNetworkPolicyLister.
+type CiliumClusterwideNetworkPolicyListerExpansion interface{}
+
 // CiliumEndpointListerExpansion allows custom methods to be added to
 // CiliumEndpointLister.
 type CiliumEndpointListerExpansion interface{}
@@ -24,6 +32,18 @@ type CiliumEndpointListerExpansion interface{}
 // CiliumEndpointNamespaceLister.
 type CiliumEndpointNamespaceListerExpansion interface{}
 
+// CiliumIdentityListerExpansion allows custom methods to be added to
+// CiliumIdentityLister.
+type CiliumIdentityListerExpansion interface{}
+
+// CiliumLocalRedirectPolicyListerExpansion allows custom methods to be added to
+// CiliumLocalRedirectPolicyLister.
+type CiliumLocalRedirectPolicyListerExpansion interface{}
+
+// CiliumLocalRedirectPolicyNamespaceListerExpansion allows custom methods to be added to
+// CiliumLocalRedirectPolicyNamespaceLister.
+type CiliumLocalRedirectPolicyNamespaceListerExpansion interface{}
+
 // CiliumNetworkPolicyListerExpansion allows custom methods to be added to
 // CiliumNetworkPolicyLister.
 type CiliumNetworkPolicyListerExpansion interface{}
@@ -31,3 +51,7 @@ type CiliumNetworkPolicyListerExpansion interface{}
 // CiliumNetworkPolicyNamespaceListerExpansion allows custom methods to be added to
 // CiliumNetworkPolicyNamespaceLister.
 type CiliumNetworkPolicyNamespaceListerExpansion interface{}
+
+// CiliumNodeListerExpansion allows custom methods to be added to
+// CiliumNodeLister.
+type CiliumNodeListerExpansion interface{}

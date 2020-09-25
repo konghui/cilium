@@ -1,4 +1,4 @@
-// Copyright 2018 Authors of Cilium
+// Copyright 2018-2019 Authors of Cilium
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -15,12 +15,14 @@
 package store
 
 import (
+	"context"
 	"path"
-	"time"
 
 	"github.com/cilium/cilium/pkg/kvstore"
 	"github.com/cilium/cilium/pkg/kvstore/store"
-	"github.com/cilium/cilium/pkg/node"
+	nodeTypes "github.com/cilium/cilium/pkg/node/types"
+	"github.com/cilium/cilium/pkg/option"
+	"github.com/cilium/cilium/pkg/source"
 )
 
 var (
@@ -32,7 +34,7 @@ var (
 
 	// KeyCreator creates a node for a shared store
 	KeyCreator = func() store.Key {
-		n := node.Node{}
+		n := nodeTypes.Node{}
 		return &n
 	}
 )
@@ -50,17 +52,17 @@ func NewNodeObserver(manager NodeManager) *NodeObserver {
 }
 
 func (o *NodeObserver) OnUpdate(k store.Key) {
-	if n, ok := k.(*node.Node); ok {
+	if n, ok := k.(*nodeTypes.Node); ok {
 		nodeCopy := n.DeepCopy()
-		nodeCopy.Source = node.FromKVStore
+		nodeCopy.Source = source.KVStore
 		o.manager.NodeUpdated(*nodeCopy)
 	}
 }
 
-func (o *NodeObserver) OnDelete(k store.Key) {
-	if n, ok := k.(*node.Node); ok {
+func (o *NodeObserver) OnDelete(k store.NamedKey) {
+	if n, ok := k.(*nodeTypes.Node); ok {
 		nodeCopy := n.DeepCopy()
-		nodeCopy.Source = node.FromKVStore
+		nodeCopy.Source = source.KVStore
 		o.manager.NodeDeleted(*nodeCopy)
 	}
 }
@@ -74,29 +76,34 @@ type NodeRegistrar struct {
 type NodeManager interface {
 	// NodeUpdated is called when the store detects a change in node
 	// information
-	NodeUpdated(n node.Node)
+	NodeUpdated(n nodeTypes.Node)
 
 	// NodeDeleted is called when the store detects a deletion of a node
-	NodeDeleted(n node.Node)
+	NodeDeleted(n nodeTypes.Node)
+
+	// Exists is called to verify if a node exists
+	Exists(id nodeTypes.Identity) bool
 }
 
 // RegisterNode registers the local node in the cluster
-func (nr *NodeRegistrar) RegisterNode(n *node.Node, manager NodeManager) error {
+func (nr *NodeRegistrar) RegisterNode(n *nodeTypes.Node, manager NodeManager) error {
+	if option.Config.KVStore == "" {
+		return nil
+	}
 
 	// Join the shared store holding node information of entire cluster
 	store, err := store.JoinSharedStore(store.Configuration{
-		Prefix:                  NodeStorePrefix,
-		KeyCreator:              KeyCreator,
-		SynchronizationInterval: time.Minute,
-		Observer:                NewNodeObserver(manager),
+		Prefix:     NodeStorePrefix,
+		KeyCreator: KeyCreator,
+		Observer:   NewNodeObserver(manager),
 	})
 
 	if err != nil {
 		return err
 	}
 
-	if err = store.UpdateLocalKeySync(n); err != nil {
-		store.Close()
+	if err = store.UpdateLocalKeySync(context.TODO(), n); err != nil {
+		store.Release()
 		return err
 	}
 
@@ -107,6 +114,6 @@ func (nr *NodeRegistrar) RegisterNode(n *node.Node, manager NodeManager) error {
 
 // UpdateLocalKeySync synchronizes the local key for the node using the
 // SharedStore.
-func (nr *NodeRegistrar) UpdateLocalKeySync(n *node.Node) error {
-	return nr.SharedStore.UpdateLocalKeySync(n)
+func (nr *NodeRegistrar) UpdateLocalKeySync(n *nodeTypes.Node) error {
+	return nr.SharedStore.UpdateLocalKeySync(context.TODO(), n)
 }

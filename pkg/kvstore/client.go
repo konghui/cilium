@@ -15,24 +15,25 @@
 package kvstore
 
 import (
+	"context"
 	"fmt"
-	"sync"
+	"time"
 )
 
 var (
 	// defaultClient is the default client initialized by initClient
 	defaultClient BackendOperations
-	once          sync.Once
 	// defaultClientSet is a channel that is closed whenever the defaultClient
 	// is set.
 	defaultClientSet = make(chan struct{})
 )
 
-func initClient(module backendModule) error {
-	c, errChan := module.newClient()
+func initClient(ctx context.Context, module backendModule, opts *ExtraOptions) error {
+	scopedLog := log.WithField(fieldKVStoreModule, module.getName())
+	c, errChan := module.newClient(ctx, opts)
 	if c == nil {
 		err := <-errChan
-		log.WithError(err).Fatalf("Unable to create etcd client")
+		scopedLog.WithError(err).Fatal("Unable to create kvstore client")
 	}
 
 	defaultClient = c
@@ -45,10 +46,10 @@ func initClient(module backendModule) error {
 
 	go func() {
 		err, isErr := <-errChan
-		if isErr {
-			log.WithError(err).Fatalf("Unable to connect to kvstore")
+		if isErr && err != nil {
+			scopedLog.WithError(err).Fatal("Unable to connect to kvstore")
 		}
-		deleteLegacyPrefixes()
+		deleteLegacyPrefixes(ctx)
 	}()
 
 	return nil
@@ -56,14 +57,12 @@ func initClient(module backendModule) error {
 
 // Client returns the global kvstore client or nil if the client is not configured yet
 func Client() BackendOperations {
-	once.Do(func() {
-		<-defaultClientSet
-	})
+	<-defaultClientSet
 	return defaultClient
 }
 
 // NewClient returns a new kvstore client based on the configuration
-func NewClient(selectedBackend string, opts map[string]string) (BackendOperations, chan error) {
+func NewClient(ctx context.Context, selectedBackend string, opts map[string]string, options *ExtraOptions) (BackendOperations, chan error) {
 	// Channel used to report immediate errors, module.newClient will
 	// create and return a different channel, caller doesn't need to know
 	errChan := make(chan error, 1)
@@ -80,5 +79,33 @@ func NewClient(selectedBackend string, opts map[string]string) (BackendOperation
 		return nil, errChan
 	}
 
-	return module.newClient()
+	if err := module.setExtraConfig(options); err != nil {
+		errChan <- err
+		return nil, errChan
+	}
+
+	return module.newClient(ctx, options)
+}
+
+// Connected returns a channel which is closed when the following conditions
+// are being met at the same time:
+// * The kvstore client is configured
+// * Connectivity to the kvstore has been established
+// * The kvstore has quorum
+//
+// The channel will *not* be closed if the kvstore client is closed before
+// connectivity or quorum has been achieved. It will wait until a new kvstore
+// client is configured to again wait for connectivity and quorum.
+func Connected() <-chan struct{} {
+	c := make(chan struct{})
+	go func(c chan struct{}) {
+		for {
+			if err := <-Client().Connected(context.Background()); err == nil {
+				close(c)
+				return
+			}
+			time.Sleep(100 * time.Millisecond)
+		}
+	}(c)
+	return c
 }

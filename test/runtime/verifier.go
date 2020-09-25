@@ -1,4 +1,4 @@
-// Copyright 2018 Authors of Cilium
+// Copyright 2018-2019 Authors of Cilium
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -38,8 +38,12 @@ var _ = Describe("RuntimeVerifier", func() {
 		By("Stopping Cilium")
 		res := vm.ExecWithSudo("systemctl stop cilium")
 		res.ExpectSuccess()
+		ExpectCiliumNotRunning(vm)
 		res = vm.ExecWithSudo("rm -f /sys/fs/bpf/tc/globals/cilium*")
 		res.ExpectSuccess()
+		cmd := fmt.Sprintf("make -C %s/../bpf clean V=0", vm.BasePath())
+		res = vm.Exec(cmd)
+		res.ExpectSuccess("Expected cleaning the bpf/ tree to succeed")
 	})
 
 	AfterFailed(func() {
@@ -51,7 +55,7 @@ var _ = Describe("RuntimeVerifier", func() {
 		GinkgoPrint("===================== TEST FAILED =====================")
 		commands := []string{"clang --version", "uname -a"}
 		for _, cmd := range commands {
-			res := vm.ExecWithSudo(fmt.Sprintf("%s", cmd))
+			res := vm.ExecWithSudo(cmd)
 			GinkgoPrint(res.GetDebugMessage())
 		}
 		GinkgoPrint("===================== EXITING REPORT GENERATION =====================\n")
@@ -60,16 +64,17 @@ var _ = Describe("RuntimeVerifier", func() {
 	AfterAll(func() {
 		err := vm.RestartCilium()
 		Expect(err).Should(BeNil(), "restarting Cilium failed")
+		vm.CloseSSHClient()
 	})
 
 	It("runs the kernel verifier against the tree copy of the BPF datapath", func() {
 		By("Building BPF objects from the tree")
-		cmd := fmt.Sprintf("make -C %s/../bpf V=0", helpers.BasePath)
+		cmd := fmt.Sprintf("make -C %s/../bpf V=0", vm.BasePath())
 		res := vm.Exec(cmd)
 		res.ExpectSuccess("Expected compilation of the BPF objects to succeed")
 
 		By("Running the verifier test script")
-		cmd = fmt.Sprintf("%s/%s", helpers.BasePath, script)
+		cmd = vm.GetFilePath(script)
 		res = vm.ExecWithSudo(cmd)
 		res.ExpectSuccess("Expected the kernel verifier to pass for BPF programs")
 	})

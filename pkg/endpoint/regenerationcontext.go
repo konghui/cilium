@@ -1,4 +1,4 @@
-// Copyright 2016-2018 Authors of Cilium
+// Copyright 2016-2019 Authors of Cilium
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -18,30 +18,10 @@ import (
 	"context"
 
 	"github.com/cilium/cilium/pkg/completion"
+	"github.com/cilium/cilium/pkg/endpoint/regeneration"
+	"github.com/cilium/cilium/pkg/logging/logfields"
 	"github.com/cilium/cilium/pkg/revert"
 )
-
-func (e *ExternalRegenerationMetadata) toRegenerationContext() *regenerationContext {
-	return &regenerationContext{
-		Reason: e.Reason,
-		datapathRegenerationContext: &datapathRegenerationContext{
-			reloadDatapath: e.ReloadDatapath,
-			ctCleaned:      make(chan struct{}),
-		},
-	}
-}
-
-// ExternalRegenerationMetadata contains any information about a regeneration that
-// the endpoint subsystem should be made aware of for a given endpoint.
-type ExternalRegenerationMetadata struct {
-	// Reason provides context to source for the regeneration, which is
-	// used to generate useful log messages.
-	Reason string
-
-	// ReloadDatapath forces the datapath programs to be reloaded. It does
-	// not guarantee recompilation of the programs.
-	ReloadDatapath bool
-}
 
 // RegenerationContext provides context to regenerate() calls to determine
 // the caller, and which specific aspects to regeneration are necessary to
@@ -60,31 +40,47 @@ type regenerationContext struct {
 	DoneFunc func()
 
 	datapathRegenerationContext *datapathRegenerationContext
+
+	parentContext context.Context
+
+	cancelFunc context.CancelFunc
+}
+
+func ParseExternalRegenerationMetadata(ctx context.Context, c context.CancelFunc, e *regeneration.ExternalRegenerationMetadata) *regenerationContext {
+	if e.RegenerationLevel == regeneration.Invalid {
+		log.WithField(logfields.Reason, e.Reason).Errorf("Uninitialized regeneration level")
+	}
+
+	return &regenerationContext{
+		Reason: e.Reason,
+		datapathRegenerationContext: &datapathRegenerationContext{
+			regenerationLevel: e.RegenerationLevel,
+			ctCleaned:         make(chan struct{}),
+		},
+		parentContext: ctx,
+		cancelFunc:    c,
+	}
 }
 
 // datapathRegenerationContext contains information related to regenerating the
 // datapath (BPF, proxy, etc.).
 type datapathRegenerationContext struct {
-	bpfHeaderfilesHash    string
-	epInfoCache           *epInfoCache
-	bpfHeaderfilesChanged bool
-	proxyWaitGroup        *completion.WaitGroup
-	ctCleaned             chan struct{}
-	completionCtx         context.Context
-	completionCancel      context.CancelFunc
-	currentDir            string
-	nextDir               string
+	bpfHeaderfilesHash string
+	epInfoCache        *epInfoCache
+	proxyWaitGroup     *completion.WaitGroup
+	ctCleaned          chan struct{}
+	completionCtx      context.Context
+	completionCancel   context.CancelFunc
+	currentDir         string
+	nextDir            string
+	regenerationLevel  regeneration.DatapathRegenerationLevel
 
-	// reloadDatapath forces the datapath programs to be reloaded. It does
-	// not guarantee recompilation of the programs.
-	reloadDatapath bool
-	finalizeList   revert.FinalizeList
-	revertStack    revert.RevertStack
+	finalizeList revert.FinalizeList
+	revertStack  revert.RevertStack
 }
 
-func (ctx *datapathRegenerationContext) prepareForProxyUpdates() {
-	// Set up a context to wait for proxy completions.
-	completionCtx, completionCancel := context.WithTimeout(context.Background(), EndpointGenerationTimeout)
+func (ctx *datapathRegenerationContext) prepareForProxyUpdates(parentCtx context.Context) {
+	completionCtx, completionCancel := context.WithTimeout(parentCtx, EndpointGenerationTimeout)
 	ctx.proxyWaitGroup = completion.NewWaitGroup(completionCtx)
 	ctx.completionCtx = completionCtx
 	ctx.completionCancel = completionCancel

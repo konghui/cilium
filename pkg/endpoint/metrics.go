@@ -1,4 +1,4 @@
-// Copyright 2018 Authors of Cilium
+// Copyright 2018-2019 Authors of Cilium
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -15,20 +15,40 @@
 package endpoint
 
 import (
+	"time"
+
 	"github.com/cilium/cilium/api/v1/models"
+	loaderMetrics "github.com/cilium/cilium/pkg/datapath/loader/metrics"
 	"github.com/cilium/cilium/pkg/lock"
 	"github.com/cilium/cilium/pkg/logging/logfields"
 	"github.com/cilium/cilium/pkg/metrics"
 	"github.com/cilium/cilium/pkg/spanstat"
 
-	"math"
-	"time"
+	"github.com/prometheus/client_golang/prometheus"
 )
 
 var endpointPolicyStatus endpointPolicyStatusMap
 
 func init() {
 	endpointPolicyStatus = newEndpointPolicyStatusMap()
+}
+
+type statistics interface {
+	GetMap() map[string]*spanstat.SpanStat
+}
+
+func sendMetrics(stats statistics, metric prometheus.ObserverVec) {
+	for scope, stat := range stats.GetMap() {
+		// Skip scopes that have not been hit (zero duration), so the count in
+		// the histogram accurately reflects the number of times each scope is
+		// hit, and the distribution is not incorrectly skewed towards zero.
+		if stat.SuccessTotal() != time.Duration(0) {
+			metric.WithLabelValues(scope, "success").Observe(stat.SuccessTotal().Seconds())
+		}
+		if stat.FailureTotal() != time.Duration(0) {
+			metric.WithLabelValues(scope, "failure").Observe(stat.FailureTotal().Seconds())
+		}
+	}
 }
 
 type regenerationStatistics struct {
@@ -42,7 +62,7 @@ type regenerationStatistics struct {
 	proxyConfiguration     spanstat.SpanStat
 	proxyPolicyCalculation spanstat.SpanStat
 	proxyWaitForAck        spanstat.SpanStat
-	bpfCompilation         spanstat.SpanStat
+	datapathRealization    loaderMetrics.SpanStat
 	mapSync                spanstat.SpanStat
 	prepareBuild           spanstat.SpanStat
 }
@@ -51,45 +71,59 @@ type regenerationStatistics struct {
 // Prometheus.
 func (s *regenerationStatistics) SendMetrics() {
 	endpointPolicyStatus.Update(s.endpointID, s.policyStatus)
-	metrics.EndpointCountRegenerating.Dec()
 
 	if !s.success {
 		// Endpoint regeneration failed, increase on failed metrics
 		metrics.EndpointRegenerationCount.WithLabelValues(metrics.LabelValueOutcomeFail).Inc()
+		metrics.EndpointRegenerationTotal.WithLabelValues(metrics.LabelValueOutcomeFail).Inc()
 		return
 	}
 
 	metrics.EndpointRegenerationCount.WithLabelValues(metrics.LabelValueOutcomeSuccess).Inc()
-	regenerateTimeSec := s.totalTime.Total().Seconds()
-	metrics.EndpointRegenerationTime.Add(regenerateTimeSec)
-	metrics.EndpointRegenerationTimeSquare.Add(math.Pow(regenerateTimeSec, 2))
+	metrics.EndpointRegenerationTotal.WithLabelValues(metrics.LabelValueOutcomeSuccess).Inc()
 
-	for scope, stat := range s.GetMap() {
-		// Skip scopes that have not been hit (zero duration), so the count in
-		// the histogram accurately reflects the number of times each scope is
-		// hit, and the distribution is not incorrectly skewed towards zero.
-		if stat.SuccessTotal() != time.Duration(0) {
-			metrics.EndpointRegenerationTimeStats.WithLabelValues(scope, "success").Observe(stat.SuccessTotal().Seconds())
-		}
-		if stat.FailureTotal() != time.Duration(0) {
-			metrics.EndpointRegenerationTimeStats.WithLabelValues(scope, "failure").Observe(stat.FailureTotal().Seconds())
-		}
-	}
+	sendMetrics(s, metrics.EndpointRegenerationTimeStats)
 }
 
 // GetMap returns a map which key is the stat name and the value is the stat
 func (s *regenerationStatistics) GetMap() map[string]*spanstat.SpanStat {
-	return map[string]*spanstat.SpanStat{
+	result := map[string]*spanstat.SpanStat{
 		"waitingForLock":         &s.waitingForLock,
 		"waitingForCTClean":      &s.waitingForCTClean,
 		"policyCalculation":      &s.policyCalculation,
 		"proxyConfiguration":     &s.proxyConfiguration,
 		"proxyPolicyCalculation": &s.proxyPolicyCalculation,
 		"proxyWaitForAck":        &s.proxyWaitForAck,
-		"bpfCompilation":         &s.bpfCompilation,
 		"mapSync":                &s.mapSync,
 		"prepareBuild":           &s.prepareBuild,
 		logfields.BuildDuration:  &s.totalTime,
+	}
+	for k, v := range s.datapathRealization.GetMap() {
+		result[k] = v
+	}
+	return result
+}
+
+type policyRegenerationStatistics struct {
+	success                    bool
+	totalTime                  spanstat.SpanStat
+	waitingForIdentityCache    spanstat.SpanStat
+	waitingForPolicyRepository spanstat.SpanStat
+	policyCalculation          spanstat.SpanStat
+}
+
+func (ps *policyRegenerationStatistics) SendMetrics() {
+	metrics.PolicyRegenerationCount.Inc()
+
+	sendMetrics(ps, metrics.PolicyRegenerationTimeStats)
+}
+
+func (ps *policyRegenerationStatistics) GetMap() map[string]*spanstat.SpanStat {
+	return map[string]*spanstat.SpanStat{
+		"waitingForIdentityCache":    &ps.waitingForIdentityCache,
+		"waitingForPolicyRepository": &ps.waitingForPolicyRepository,
+		"policyCalculation":          &ps.policyCalculation,
+		logfields.BuildDuration:      &ps.totalTime,
 	}
 }
 
@@ -124,10 +158,13 @@ func (epPolicyMaps *endpointPolicyStatusMap) Remove(endpointID uint16) {
 // UpdateMetrics update the policy enforcement metrics statistics for the endpoints.
 func (epPolicyMaps *endpointPolicyStatusMap) UpdateMetrics() {
 	policyStatus := map[models.EndpointPolicyEnabled]float64{
-		models.EndpointPolicyEnabledNone:    0,
-		models.EndpointPolicyEnabledEgress:  0,
-		models.EndpointPolicyEnabledIngress: 0,
-		models.EndpointPolicyEnabledBoth:    0,
+		models.EndpointPolicyEnabledNone:         0,
+		models.EndpointPolicyEnabledEgress:       0,
+		models.EndpointPolicyEnabledIngress:      0,
+		models.EndpointPolicyEnabledBoth:         0,
+		models.EndpointPolicyEnabledAuditEgress:  0,
+		models.EndpointPolicyEnabledAuditIngress: 0,
+		models.EndpointPolicyEnabledAuditBoth:    0,
 	}
 
 	epPolicyMaps.mutex.Lock()

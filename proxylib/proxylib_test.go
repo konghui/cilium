@@ -31,14 +31,16 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
+const debug = false
+
 func TestOpenModule(t *testing.T) {
-	mod1 := OpenModule([][2]string{}, true)
+	mod1 := OpenModule([][2]string{}, debug)
 	if mod1 == 0 {
 		t.Error("OpenModule() with empty params failed")
 	} else {
 		defer CloseModule(mod1)
 	}
-	mod2 := OpenModule([][2]string{}, true)
+	mod2 := OpenModule([][2]string{}, debug)
 	if mod2 == 0 {
 		t.Error("OpenModule() with empty params failed")
 	} else {
@@ -48,7 +50,7 @@ func TestOpenModule(t *testing.T) {
 		t.Error("OpenModule() with empty params called again opened a new module")
 	}
 
-	mod3 := OpenModule([][2]string{{"dummy-key", "dummy-value"}, {"key2", "value2"}}, true)
+	mod3 := OpenModule([][2]string{{"dummy-key", "dummy-value"}, {"key2", "value2"}}, debug)
 	if mod3 != 0 {
 		t.Error("OpenModule() with unknown params accepted")
 		defer CloseModule(mod3)
@@ -57,7 +59,7 @@ func TestOpenModule(t *testing.T) {
 	logServer := test.StartAccessLogServer("access_log.sock", 10)
 	defer logServer.Close()
 
-	mod4 := OpenModule([][2]string{{"access-log-path", logServer.Path}}, true)
+	mod4 := OpenModule([][2]string{{"access-log-path", logServer.Path}}, debug)
 	if mod4 == 0 {
 		t.Errorf("OpenModule() with access log path %s failed", logServer.Path)
 	} else {
@@ -67,7 +69,7 @@ func TestOpenModule(t *testing.T) {
 		t.Error("OpenModule() should have returned a different module")
 	}
 
-	mod5 := OpenModule([][2]string{{"access-log-path", logServer.Path}, {"node-id", "host~127.0.0.1~libcilium~localdomain"}}, true)
+	mod5 := OpenModule([][2]string{{"access-log-path", logServer.Path}, {"node-id", "host~127.0.0.1~libcilium~localdomain"}}, debug)
 	if mod5 == 0 {
 		t.Errorf("OpenModule() with access log path %s failed", logServer.Path)
 	} else {
@@ -79,7 +81,7 @@ func TestOpenModule(t *testing.T) {
 }
 
 func TestOnNewConnection(t *testing.T) {
-	mod := OpenModule([][2]string{}, true)
+	mod := OpenModule([][2]string{}, debug)
 	if mod == 0 {
 		t.Error("OpenModule() with empty params failed")
 	} else {
@@ -121,8 +123,10 @@ func TestOnNewConnection(t *testing.T) {
 func checkAccessLogs(t *testing.T, logServer *test.AccessLogServer, expPasses, expDrops int) {
 	t.Helper()
 	passes, drops := 0, 0
-	empty := false
-	for !empty {
+	nWaits := 0
+	done := false
+	// Loop until done or when the timeout has ticked 100 times without any logs being received
+	for !done && nWaits < 100 {
 		select {
 		case pblog := <-logServer.Logs:
 			if pblog.EntryType == cilium.EntryType_Denied {
@@ -130,8 +134,16 @@ func checkAccessLogs(t *testing.T, logServer *test.AccessLogServer, expPasses, e
 			} else {
 				passes++
 			}
-		case <-time.After(10 * time.Millisecond):
-			empty = true
+			// Start the timeout again (for upto 5 seconds)
+			nWaits = 0
+		case <-time.After(50 * time.Millisecond):
+			// Count the number of times we have waited since the last log was received
+			nWaits++
+			// Finish when expected number of passes and drops have been collected
+			// and there are no more logs in the channel for 50 milliseconds
+			if passes == expPasses && drops == expDrops {
+				done = true
+			}
 		}
 	}
 
@@ -144,7 +156,7 @@ func TestOnDataNoPolicy(t *testing.T) {
 	logServer := test.StartAccessLogServer("access_log.sock", 10)
 	defer logServer.Close()
 
-	mod := OpenModule([][2]string{{"access-log-path", logServer.Path}}, true)
+	mod := OpenModule([][2]string{{"access-log-path", logServer.Path}}, debug)
 	if mod == 0 {
 		t.Errorf("OpenModule() with access log path %s failed", logServer.Path)
 	} else {
@@ -185,8 +197,8 @@ type PanicParser struct {
 	connection *proxylib.Connection
 }
 
-func (p *PanicParserFactory) Create(connection *proxylib.Connection) proxylib.Parser {
-	log.Infof("PanicParserFactory: Create: %v", connection)
+func (p *PanicParserFactory) Create(connection *proxylib.Connection) interface{} {
+	log.Debugf("PanicParserFactory: Create: %v", connection)
 	return &PanicParser{connection: connection}
 }
 
@@ -204,7 +216,7 @@ func TestOnDataPanic(t *testing.T) {
 	logServer := test.StartAccessLogServer("access_log.sock", 10)
 	defer logServer.Close()
 
-	mod := OpenModule([][2]string{{"access-log-path", logServer.Path}}, true)
+	mod := OpenModule([][2]string{{"access-log-path", logServer.Path}}, debug)
 	if mod == 0 {
 		t.Errorf("OpenModule() with access log path %s failed", logServer.Path)
 	} else {
@@ -245,7 +257,7 @@ func TestUnsupportedL7Drops(t *testing.T) {
 	logServer := test.StartAccessLogServer("access_log.sock", 10)
 	defer logServer.Close()
 
-	mod := OpenModule([][2]string{{"access-log-path", logServer.Path}}, true)
+	mod := OpenModule([][2]string{{"access-log-path", logServer.Path}}, debug)
 	if mod == 0 {
 		t.Errorf("OpenModule() with access log path %s failed", logServer.Path)
 	} else {
@@ -294,7 +306,7 @@ func TestUnsupportedL7DropsGeneric(t *testing.T) {
 	logServer := test.StartAccessLogServer("access_log.sock", 10)
 	defer logServer.Close()
 
-	mod := OpenModule([][2]string{{"access-log-path", logServer.Path}}, true)
+	mod := OpenModule([][2]string{{"access-log-path", logServer.Path}}, debug)
 	if mod == 0 {
 		t.Errorf("OpenModule() with access log path %s failed", logServer.Path)
 	} else {
@@ -312,10 +324,63 @@ func TestUnsupportedL7DropsGeneric(t *testing.T) {
 		    remote_policies: 4
 		    l7_proto: "this-parser-does-not-exist"
 		    l7_rules: <
-		      l7_rules: <
+		      l7_allow_rules: <
 		        rule: <
 		          key: "prefix"
 		          value: "Beginning"
+		        >
+		      >
+		    >
+		  >
+		>
+		`})
+
+	// Using headertester parser
+	buf := CheckOnNewConnection(t, mod, "test.headerparser", 1, true, 1, 2, "1.1.1.1:34567", "2.2.2.2:80", "FooBar",
+		256, proxylib.OK, 1)
+
+	// Original direction data, drops with remaining data
+	line1, line2, line3, line4 := "Beginning----\n", "foo\n", "----End\n", "\n"
+	data := line1 + line2 + line3 + line4
+	CheckOnData(t, 1, false, false, &[][]byte{[]byte(data)}, []ExpFilterOp{
+		{proxylib.DROP, len(line1)},
+		{proxylib.DROP, len(line2)},
+		{proxylib.DROP, len(line3)},
+		{proxylib.DROP, len(line4)},
+	}, proxylib.OK, "Line dropped: "+line1+"Line dropped: "+line2+"Line dropped: "+line3+"Line dropped: "+line4)
+
+	expPasses, expDrops := 0, 4
+	checkAccessLogs(t, logServer, expPasses, expDrops)
+
+	CheckClose(t, 1, buf, 1)
+}
+
+func TestEnvoyL7DropsGeneric(t *testing.T) {
+	logServer := test.StartAccessLogServer("access_log.sock", 10)
+	defer logServer.Close()
+
+	mod := OpenModule([][2]string{{"access-log-path", logServer.Path}}, debug)
+	if mod == 0 {
+		t.Errorf("OpenModule() with access log path %s failed", logServer.Path)
+	} else {
+		defer CloseModule(mod)
+	}
+
+	insertPolicyText(t, mod, "1", []string{`
+		name: "FooBar"
+		policy: 2
+		ingress_per_port_policies: <
+		  port: 80
+		  rules: <
+		    remote_policies: 1
+		    remote_policies: 3
+		    remote_policies: 4
+		    l7_proto: "envoy.filter.network.test"
+		    l7_rules: <
+		      l7_allow_rules: <
+		        rule: <
+		          key: "action"
+		          value: "drop"
 		        >
 		      >
 		    >
@@ -347,7 +412,7 @@ func TestTwoRulesOnSamePortFirstNoL7(t *testing.T) {
 	logServer := test.StartAccessLogServer("access_log.sock", 10)
 	defer logServer.Close()
 
-	mod := OpenModule([][2]string{{"access-log-path", logServer.Path}}, true)
+	mod := OpenModule([][2]string{{"access-log-path", logServer.Path}}, debug)
 	if mod == 0 {
 		t.Errorf("OpenModule() with access log path %s failed", logServer.Path)
 	} else {
@@ -381,7 +446,7 @@ func TestTwoRulesOnSamePortFirstNoL7Generic(t *testing.T) {
 	logServer := test.StartAccessLogServer("access_log.sock", 10)
 	defer logServer.Close()
 
-	mod := OpenModule([][2]string{{"access-log-path", logServer.Path}}, true)
+	mod := OpenModule([][2]string{{"access-log-path", logServer.Path}}, debug)
 	if mod == 0 {
 		t.Errorf("OpenModule() with access log path %s failed", logServer.Path)
 	} else {
@@ -402,13 +467,13 @@ func TestTwoRulesOnSamePortFirstNoL7Generic(t *testing.T) {
 		    remote_policies: 4
 		    l7_proto: "test.headerparser"
 		    l7_rules: <
-		      l7_rules: <
+		      l7_allow_rules: <
 		        rule: <
 		          key: "prefix"
 		          value: "Beginning"
 		        >
 		      >
-		      l7_rules: <
+		      l7_allow_rules: <
 		        rule: <
 		          key: "suffix"
 		          value: "End"
@@ -424,7 +489,7 @@ func TestTwoRulesOnSamePortMismatchingL7(t *testing.T) {
 	logServer := test.StartAccessLogServer("access_log.sock", 10)
 	defer logServer.Close()
 
-	mod := OpenModule([][2]string{{"access-log-path", logServer.Path}}, true)
+	mod := OpenModule([][2]string{{"access-log-path", logServer.Path}}, debug)
 	if mod == 0 {
 		t.Errorf("OpenModule() with access log path %s failed", logServer.Path)
 	} else {
@@ -458,13 +523,13 @@ func TestTwoRulesOnSamePortMismatchingL7(t *testing.T) {
 		    remote_policies: 4
 		    l7_proto: "test.headerparser"
 		    l7_rules: <
-		      l7_rules: <
+		      l7_allow_rules: <
 		        rule: <
 		          key: "prefix"
 		          value: "Beginning"
 		        >
 		      >
-		      l7_rules: <
+		      l7_allow_rules: <
 		        rule: <
 		          key: "suffix"
 		          value: "End"
@@ -477,7 +542,7 @@ func TestTwoRulesOnSamePortMismatchingL7(t *testing.T) {
 	if err == nil {
 		t.Errorf("Expected Policy Update to fail due to mismatching L7 protocols on the same port, but it succeeded")
 	} else {
-		log.Infof("Expected error: %s", err)
+		log.Debugf("Expected error: %s", err)
 	}
 }
 
@@ -485,7 +550,7 @@ func TestSimplePolicy(t *testing.T) {
 	logServer := test.StartAccessLogServer("access_log.sock", 10)
 	defer logServer.Close()
 
-	mod := OpenModule([][2]string{{"access-log-path", logServer.Path}}, true)
+	mod := OpenModule([][2]string{{"access-log-path", logServer.Path}}, debug)
 	if mod == 0 {
 		t.Errorf("OpenModule() with access log path %s failed", logServer.Path)
 	} else {
@@ -503,13 +568,13 @@ func TestSimplePolicy(t *testing.T) {
 		    remote_policies: 4
 		    l7_proto: "test.headerparser"
 		    l7_rules: <
-		      l7_rules: <
+		      l7_allow_rules: <
 		        rule: <
 		          key: "prefix"
 		          value: "Beginning"
 		        >
 		      >
-		      l7_rules: <
+		      l7_allow_rules: <
 		        rule: <
 		          key: "suffix"
 		          value: "End"
@@ -544,7 +609,7 @@ func TestAllowAllPolicy(t *testing.T) {
 	logServer := test.StartAccessLogServer("access_log.sock", 10)
 	defer logServer.Close()
 
-	mod := OpenModule([][2]string{{"access-log-path", logServer.Path}}, true)
+	mod := OpenModule([][2]string{{"access-log-path", logServer.Path}}, debug)
 	if mod == 0 {
 		t.Errorf("OpenModule() with access log path %s failed", logServer.Path)
 	} else {
@@ -559,7 +624,7 @@ func TestAllowAllPolicy(t *testing.T) {
 		  rules: <
 		    l7_proto: "test.headerparser"
 		    l7_rules: <
-		      l7_rules: <>
+		      l7_allow_rules: <>
 		    >
 		  >
 		>
@@ -589,7 +654,7 @@ func TestAllowEmptyPolicy(t *testing.T) {
 	logServer := test.StartAccessLogServer("access_log.sock", 10)
 	defer logServer.Close()
 
-	mod := OpenModule([][2]string{{"access-log-path", logServer.Path}}, true)
+	mod := OpenModule([][2]string{{"access-log-path", logServer.Path}}, debug)
 	if mod == 0 {
 		t.Errorf("OpenModule() with access log path %s failed", logServer.Path)
 	} else {
@@ -631,5 +696,54 @@ func TestAllowEmptyPolicy(t *testing.T) {
 	checkAccessLogs(t, logServer, expPasses, expDrops)
 
 	CheckClose(t, 2, buf, 2)
+	CheckClose(t, 1, buf, 1)
+}
+
+func TestAllowAllPolicyL3Egress(t *testing.T) {
+	logServer := test.StartAccessLogServer("access_log.sock", 10)
+	defer logServer.Close()
+
+	mod := OpenModule([][2]string{{"access-log-path", logServer.Path}}, debug)
+	if mod == 0 {
+		t.Errorf("OpenModule() with access log path %s failed", logServer.Path)
+	} else {
+		defer CloseModule(mod)
+	}
+
+	//logging.ToggleDebugLogs(true)
+	//log.SetLevel(log.DebugLevel)
+
+	insertPolicyText(t, mod, "1", []string{`
+		name: "FooBar"
+		policy: 42
+		egress_per_port_policies: <
+		  port: 80
+		  rules: <
+		    remote_policies: 2
+		    l7_proto: "test.headerparser"
+		    l7_rules: <
+		      l7_allow_rules: <>
+		    >
+		  >
+		>
+		`})
+
+	// Using headertester parser
+	buf := CheckOnNewConnection(t, mod, "test.headerparser", 1, false, 42, 2, "1.1.1.1:34567", "2.2.2.2:80", "FooBar",
+		80, proxylib.OK, 1)
+
+	// Original direction data, drops with remaining data
+	line1, line2, line3, line4 := "Beginning----\n", "foo\n", "----End\n", "\n"
+	data := line1 + line2 + line3 + line4
+	CheckOnData(t, 1, false, false, &[][]byte{[]byte(data)}, []ExpFilterOp{
+		{proxylib.PASS, len(line1)},
+		{proxylib.PASS, len(line2)},
+		{proxylib.PASS, len(line3)},
+		{proxylib.PASS, len(line4)},
+	}, proxylib.OK, "")
+
+	expPasses, expDrops := 4, 0
+	checkAccessLogs(t, logServer, expPasses, expDrops)
+
 	CheckClose(t, 1, buf, 1)
 }

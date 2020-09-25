@@ -11,7 +11,11 @@ import argparse
 import os
 import sys
 
-from github import Github
+try:
+    from github import Github
+except ImportError:
+    print("pygithub not found you can install it by running 'pip3 install --user PyGithub'")
+    sys.exit(-1)
 
 parser = argparse.ArgumentParser()
 parser.add_argument('pr_number', type=int)
@@ -34,6 +38,7 @@ old_label_len = len(pr_labels)
 
 cilium_labels = cilium.get_labels()
 
+print("Setting labels for PR {}... ".format(pr_number), end="")
 if action == "pending":
     pr_labels = [l for l in pr_labels
                  if l.name != "needs-backport/"+version]
@@ -48,7 +53,6 @@ if action == "pending":
         print("error adding backport-pending/"+version+" label to PR, exiting")
         sys.exit(2)
     pr.set_labels(*pr_labels)
-    sys.exit(0)
 
 if action == "done":
     pr_labels = [l for l in pr_labels
@@ -64,4 +68,5 @@ if action == "done":
         print("error adding backport-done/"+version+" label to PR, exiting")
         sys.exit(2)
     pr.set_labels(*pr_labels)
-    sys.exit(0)
+
+print("✓")

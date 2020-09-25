@@ -1,4 +1,4 @@
-// Copyright 2016-2018 Authors of Cilium
+// Copyright 2016-2019 Authors of Cilium
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -28,11 +28,12 @@ const (
 	// PathDelimiter is the delimiter used in the labels paths.
 	PathDelimiter = "."
 
-	// IDNameAll is a special label which matches all labels.
-	IDNameAll = "all"
-
 	// IDNameHost is the label used for the hostname ID.
 	IDNameHost = "host"
+
+	// IDNameRemoteNode is the label used to describe the
+	// ReservedIdentityRemoteNode
+	IDNameRemoteNode = "remote-node"
 
 	// IDNameWorld is the label used for the world ID.
 	IDNameWorld = "world"
@@ -56,7 +57,7 @@ const (
 	// IDNameUnmanaged is the label used to identify unmanaged endpoints
 	IDNameUnmanaged = "unmanaged"
 
-	// IDNameUnknown is the label used to to idenfity an endpoint with an
+	// IDNameUnknown is the label used to to identify an endpoint with an
 	// unknown identity.
 	IDNameUnknown = "unknown"
 )
@@ -64,6 +65,9 @@ const (
 var (
 	// LabelHealth is the label used for health.
 	LabelHealth = Labels{IDNameHealth: NewLabel(IDNameHealth, "", LabelSourceReserved)}
+
+	// LabelHost is the label used for the host endpoint.
+	LabelHost = Labels{IDNameHost: NewLabel(IDNameHost, "", LabelSourceReserved)}
 )
 
 const (
@@ -106,11 +110,13 @@ const (
 	LabelSourceCiliumGenerated = "cilium-generated"
 )
 
-// Label is the cilium's representation of a container label.
+// Label is the Cilium's representation of a container label.
 type Label struct {
 	Key   string `json:"key"`
 	Value string `json:"value,omitempty"`
-	// Source can be one of the values present in const.go (e.g.: LabelSourceContainer)
+	// Source can be one of the above values (e.g.: LabelSourceContainer).
+	//
+	// +kubebuilder:validation:Optional
 	Source string `json:"source"`
 }
 
@@ -219,17 +225,12 @@ func NewLabel(key string, value string, source string) Label {
 	}
 }
 
-// Equals returns true if source, AbsoluteKey() and Value are equal and false otherwise.
+// Equals returns true if source, Key and Value are equal and false otherwise.
 func (l *Label) Equals(b *Label) bool {
 	if !l.IsAnySource() && l.Source != b.Source {
 		return false
 	}
 	return l.Key == b.Key && l.Value == b.Value
-}
-
-// IsAllLabel returns true if the label is reserved and matches with IDNameAll.
-func (l *Label) IsAllLabel() bool {
-	return l.Source == LabelSourceReserved && l.Key == "all"
 }
 
 // IsAnySource return if the label was set with source "any".
@@ -242,9 +243,9 @@ func (l *Label) IsReservedSource() bool {
 	return l.Source == LabelSourceReserved
 }
 
-// Matches returns true if l matches the target
-func (l *Label) Matches(target *Label) bool {
-	return l.IsAllLabel() || l.Equals(target)
+// matches returns true if l matches the target
+func (l *Label) matches(target *Label) bool {
+	return l.Equals(target)
 }
 
 // String returns the string representation of Label in the for of Source:Key=Value or
@@ -385,14 +386,14 @@ func NewLabelsFromSortedList(list string) Labels {
 }
 
 // NewSelectLabelArrayFromModel parses a slice of strings and converts them
-// into an array of selecting labels.
+// into an array of selecting labels, sorted by the key.
 func NewSelectLabelArrayFromModel(base []string) LabelArray {
 	lbls := make(LabelArray, 0, len(base))
 	for i := range base {
 		lbls = append(lbls, ParseSelectLabel(base[i]))
 	}
 
-	return lbls
+	return lbls.Sort()
 }
 
 // GetModel returns model with all the values of the labels.
@@ -424,12 +425,29 @@ func (l Labels) SHA256Sum() string {
 	return fmt.Sprintf("%x", sha512.Sum512_256(l.SortedList()))
 }
 
+// FormatForKVStore returns the label as a formatted string, ending in
+// a semicolon
+//
+// DO NOT BREAK THE FORMAT OF THIS. THE RETURNED STRING IS USED AS
+// PART OF THE KEY IN THE KEY-VALUE STORE.
+//
+// Non-pointer receiver allows this to be called on a value in a map.
+func (l Label) FormatForKVStore() string {
+	// We don't care if the values already have a '=' since this method is
+	// only used to calculate a SHA256Sum
+	//
+	// We absolutely care that the final character is a semi-colon.
+	// Identity allocation in the kvstore depends on this (see
+	// kvstore.prefixMatchesKey())
+	return fmt.Sprintf(`%s:%s=%s;`, l.Source, l.Key, l.Value)
+}
+
 // SortedList returns the labels as a sorted list, separated by semicolon
 //
 // DO NOT BREAK THE FORMAT OF THIS. THE RETURNED STRING IS USED AS KEY IN
 // THE KEY-VALUE STORE.
 func (l Labels) SortedList() []byte {
-	var keys []string
+	keys := make([]string, 0, len(l))
 	for k := range l {
 		keys = append(keys, k)
 	}
@@ -437,30 +455,25 @@ func (l Labels) SortedList() []byte {
 
 	result := ""
 	for _, k := range keys {
-		// We don't care if the values already have a '=' since this method is
-		// only used to calculate a SHA256Sum
-		result += fmt.Sprintf(`%s:%s=%s;`, l[k].Source, k, l[k].Value)
+		result += l[k].FormatForKVStore()
 	}
 
 	return []byte(result)
 }
 
-// ToSlice returns a slice of label with the values of the given Labels' map.
+// ToSlice returns a slice of label with the values of the given
+// Labels' map, sorted by the key.
 func (l Labels) ToSlice() []Label {
-	labels := []Label{}
-	for _, v := range l {
-		labels = append(labels, v)
-	}
-	return labels
+	return l.LabelArray()
 }
 
-// LabelArray returns the labels as label array
+// LabelArray returns the labels as label array, sorted by the key.
 func (l Labels) LabelArray() LabelArray {
-	labels := []Label{}
+	labels := make(LabelArray, 0, len(l))
 	for _, v := range l {
 		labels = append(labels, v)
 	}
-	return labels
+	return labels.Sort()
 }
 
 // FindReserved locates all labels with reserved source in the labels and

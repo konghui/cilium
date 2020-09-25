@@ -1,4 +1,4 @@
-// Copyright 2016-2017 Authors of Cilium
+// Copyright 2016-2019 Authors of Cilium
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -24,17 +24,19 @@ import (
 	"github.com/cilium/cilium/api/v1/models"
 	"github.com/cilium/cilium/pkg/annotation"
 	"github.com/cilium/cilium/pkg/checker"
+	"github.com/cilium/cilium/pkg/identity"
 	k8sConst "github.com/cilium/cilium/pkg/k8s/apis/cilium.io"
+	slim_corev1 "github.com/cilium/cilium/pkg/k8s/slim/k8s/apis/core/v1"
+	slim_metav1 "github.com/cilium/cilium/pkg/k8s/slim/k8s/apis/meta/v1"
+	slim_networkingv1 "github.com/cilium/cilium/pkg/k8s/slim/k8s/apis/networking/v1"
+	"github.com/cilium/cilium/pkg/k8s/slim/k8s/apis/util/intstr"
 	"github.com/cilium/cilium/pkg/labels"
 	"github.com/cilium/cilium/pkg/policy"
 	"github.com/cilium/cilium/pkg/policy/api"
+	"github.com/cilium/cilium/pkg/testutils"
 
 	. "gopkg.in/check.v1"
-	"k8s.io/api/core/v1"
-	networkingv1 "k8s.io/api/networking/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/apimachinery/pkg/util/intstr"
 )
 
 // Hook up gocheck into the "go test" runner.
@@ -48,35 +50,28 @@ var _ = Suite(&K8sSuite{})
 
 var (
 	labelsA = labels.LabelArray{
-		labels.NewLabel(k8sConst.PodNamespaceLabel, v1.NamespaceDefault, labels.LabelSourceK8s),
+		labels.NewLabel(k8sConst.PodNamespaceLabel, slim_metav1.NamespaceDefault, labels.LabelSourceK8s),
 		labels.NewLabel("id", "a", labels.LabelSourceK8s),
 	}
 
-	labelSelectorA = metav1.LabelSelector{
+	labelSelectorA = slim_metav1.LabelSelector{
 		MatchLabels: map[string]string{
 			"id": "a",
 		},
 	}
 
 	labelsB = labels.LabelArray{
-		labels.NewLabel(k8sConst.PodNamespaceLabel, v1.NamespaceDefault, labels.LabelSourceK8s),
+		labels.NewLabel(k8sConst.PodNamespaceLabel, slim_metav1.NamespaceDefault, labels.LabelSourceK8s),
 		labels.NewLabel("id1", "b", labels.LabelSourceK8s),
 		labels.NewLabel("id2", "c", labels.LabelSourceK8s),
 	}
 
-	labelSelectorB = metav1.LabelSelector{
-		MatchLabels: map[string]string{
-			"id1": "b",
-			"id2": "c",
-		},
-	}
-
 	labelsC = labels.LabelArray{
-		labels.NewLabel(k8sConst.PodNamespaceLabel, v1.NamespaceDefault, labels.LabelSourceK8s),
+		labels.NewLabel(k8sConst.PodNamespaceLabel, slim_metav1.NamespaceDefault, labels.LabelSourceK8s),
 		labels.NewLabel("id", "c", labels.LabelSourceK8s),
 	}
 
-	labelSelectorC = metav1.LabelSelector{
+	labelSelectorC = slim_metav1.LabelSelector{
 		MatchLabels: map[string]string{
 			"id": "c",
 		},
@@ -94,28 +89,41 @@ var (
 		Trace: policy.TRACE_VERBOSE,
 	}
 
-	port80 = networkingv1.NetworkPolicyPort{
+	port80 = slim_networkingv1.NetworkPolicyPort{
 		Port: &intstr.IntOrString{
 			Type:   intstr.Int,
 			IntVal: 80,
 		},
 	}
+
+	dummySelectorCacheUser = &DummySelectorCacheUser{}
 )
 
+type DummySelectorCacheUser struct{}
+
+func testNewPolicyRepository() *policy.Repository {
+	repo := policy.NewPolicyRepository(nil, nil)
+	repo.GetSelectorCache().SetLocalIdentityNotifier(testutils.NewDummyIdentityNotifier())
+	return repo
+}
+
+func (d *DummySelectorCacheUser) IdentitySelectionUpdated(selector policy.CachedSelector, added, deleted []identity.NumericIdentity) {
+}
+
 func (s *K8sSuite) TestParseNetworkPolicyIngress(c *C) {
-	netPolicy := &networkingv1.NetworkPolicy{
-		Spec: networkingv1.NetworkPolicySpec{
-			PodSelector: metav1.LabelSelector{
+	netPolicy := &slim_networkingv1.NetworkPolicy{
+		Spec: slim_networkingv1.NetworkPolicySpec{
+			PodSelector: slim_metav1.LabelSelector{
 				MatchLabels: map[string]string{
 					"foo1": "bar1",
 					"foo2": "bar2",
 				},
 			},
-			Ingress: []networkingv1.NetworkPolicyIngressRule{
+			Ingress: []slim_networkingv1.NetworkPolicyIngressRule{
 				{
-					From: []networkingv1.NetworkPolicyPeer{
+					From: []slim_networkingv1.NetworkPolicyPeer{
 						{
-							PodSelector: &metav1.LabelSelector{
+							PodSelector: &slim_metav1.LabelSelector{
 								MatchLabels: map[string]string{
 									"foo3": "bar3",
 									"foo4": "bar4",
@@ -123,7 +131,7 @@ func (s *K8sSuite) TestParseNetworkPolicyIngress(c *C) {
 							},
 						},
 					},
-					Ports: []networkingv1.NetworkPolicyPort{
+					Ports: []slim_networkingv1.NetworkPolicyPort{
 						{
 							Port: &intstr.IntOrString{
 								Type:   intstr.Int,
@@ -140,7 +148,7 @@ func (s *K8sSuite) TestParseNetworkPolicyIngress(c *C) {
 	c.Assert(err, IsNil)
 
 	fromEndpoints := labels.LabelArray{
-		labels.NewLabel(k8sConst.PodNamespaceLabel, v1.NamespaceDefault, labels.LabelSourceK8s),
+		labels.NewLabel(k8sConst.PodNamespaceLabel, slim_metav1.NamespaceDefault, labels.LabelSourceK8s),
 		labels.NewLabel("foo3", "bar3", labels.LabelSourceK8s),
 		labels.NewLabel("foo4", "bar4", labels.LabelSourceK8s),
 	}
@@ -148,7 +156,7 @@ func (s *K8sSuite) TestParseNetworkPolicyIngress(c *C) {
 	ctx := policy.SearchContext{
 		From: fromEndpoints,
 		To: labels.LabelArray{
-			labels.NewLabel(k8sConst.PodNamespaceLabel, v1.NamespaceDefault, labels.LabelSourceK8s),
+			labels.NewLabel(k8sConst.PodNamespaceLabel, slim_metav1.NamespaceDefault, labels.LabelSourceK8s),
 			labels.NewLabel("foo1", "bar1", labels.LabelSourceK8s),
 			labels.NewLabel("foo2", "bar2", labels.LabelSourceK8s),
 		},
@@ -159,21 +167,24 @@ func (s *K8sSuite) TestParseNetworkPolicyIngress(c *C) {
 	c.Assert(err, IsNil)
 	c.Assert(len(rules), Equals, 1)
 
-	repo := policy.NewPolicyRepository()
+	repo := testNewPolicyRepository()
+
 	repo.AddList(rules)
 	c.Assert(repo.AllowsIngressRLocked(&ctx), Equals, api.Denied)
 
 	epSelector := api.NewESFromLabels(fromEndpoints...)
+	cachedEPSelector, _ := repo.GetSelectorCache().AddIdentitySelector(dummySelectorCacheUser, epSelector)
+	defer func() { repo.GetSelectorCache().RemoveSelector(cachedEPSelector, dummySelectorCacheUser) }()
+
 	ingressL4Policy, err := repo.ResolveL4IngressPolicy(&ctx)
 	c.Assert(ingressL4Policy, Not(IsNil))
 	c.Assert(err, IsNil)
-	c.Assert(ingressL4Policy, checker.DeepEquals, &policy.L4PolicyMap{
+	c.Assert(ingressL4Policy, checker.Equals, policy.L4PolicyMap{
 		"80/TCP": {
 			Port: 80, Protocol: api.ProtoTCP, U8Proto: 6,
-			Endpoints:    []api.EndpointSelector{epSelector},
-			L7Parser:     policy.ParserTypeNone,
-			L7RulesPerEp: policy.L7DataMap{},
-			Ingress:      true,
+			L7Parser:           policy.ParserTypeNone,
+			L7RulesPerSelector: policy.L7DataMap{cachedEPSelector: nil},
+			Ingress:            true,
 			DerivedFromRules: []labels.LabelArray{
 				labels.ParseLabelArray(
 					"k8s:"+k8sConst.PolicyLabelName,
@@ -184,13 +195,14 @@ func (s *K8sSuite) TestParseNetworkPolicyIngress(c *C) {
 			},
 		},
 	})
+	ingressL4Policy.Detach(repo.GetSelectorCache())
 
 	ctx.To = labels.LabelArray{
 		labels.NewLabel("foo2", "bar2", labels.LabelSourceK8s),
 	}
 
 	// ctx.To needs to have all labels from the policy in order to be accepted
-	c.Assert(repo.CanReachIngressRLocked(&ctx), Not(Equals), api.Allowed)
+	c.Assert(repo.AllowsIngressRLocked(&ctx), Not(Equals), api.Allowed)
 
 	ctx = policy.SearchContext{
 		From: labels.LabelArray{
@@ -203,7 +215,147 @@ func (s *K8sSuite) TestParseNetworkPolicyIngress(c *C) {
 		Trace: policy.TRACE_VERBOSE,
 	}
 	// ctx.From also needs to have all labels from the policy in order to be accepted
-	c.Assert(repo.CanReachIngressRLocked(&ctx), Not(Equals), api.Allowed)
+	c.Assert(repo.AllowsIngressRLocked(&ctx), Not(Equals), api.Allowed)
+}
+
+func (s *K8sSuite) TestParseNetworkPolicyMultipleSelectors(c *C) {
+
+	// Rule with multiple selectors in egress and ingress
+	ex1 := []byte(`{
+"kind":"NetworkPolicy",
+"apiVersion":"extensions/networkingv1",
+"metadata":{
+  "name":"ingress-multiple-selectors"
+},
+"spec":{
+  "podSelector":{
+    "matchLabels":{
+      "role":"backend"
+    }
+  },
+  "egress":[
+    {
+      "ports":[
+        {
+          "protocol":"TCP",
+          "port":5432
+        }
+      ],
+      "to":[
+        {
+          "podSelector":{
+            "matchLabels":{
+              "app":"db1"
+            }
+          }
+        },
+        {
+          "podSelector":{
+            "matchLabels":{
+              "app":"db2"
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "ingress":[
+    {
+      "from":[
+        {
+          "podSelector":{
+            "matchLabels":{
+              "role":"frontend"
+            }
+          },
+          "namespaceSelector":{
+            "matchLabels":{
+              "project":"myproject"
+            }
+          }
+        },
+        {
+          "podSelector":{
+            "matchLabels":{
+              "app":"inventory"
+            }
+          }
+        }
+      ]
+    }
+  ]
+}
+}`)
+
+	np := slim_networkingv1.NetworkPolicy{}
+	err := json.Unmarshal(ex1, &np)
+	c.Assert(err, IsNil)
+
+	rules, err := ParseNetworkPolicy(&np)
+	c.Assert(err, IsNil)
+	c.Assert(len(rules), Equals, 1)
+
+	repo := testNewPolicyRepository()
+	repo.AddList(rules)
+
+	endpointLabels := labels.LabelArray{
+		labels.NewLabel(k8sConst.PodNamespaceLabel, slim_metav1.NamespaceDefault, labels.LabelSourceK8s),
+		labels.NewLabel("role", "backend", labels.LabelSourceK8s),
+	}
+
+	// Ingress context
+	ctx := policy.SearchContext{
+		From: labels.LabelArray{
+			labels.NewLabel("role", "frontend", labels.LabelSourceK8s),
+		},
+		To:    endpointLabels,
+		Trace: policy.TRACE_VERBOSE,
+	}
+
+	// should be DENIED because ctx.From is missing the namespace selector
+	c.Assert(repo.AllowsIngressRLocked(&ctx), Equals, api.Denied)
+
+	ctx.From = labels.LabelArray{
+		labels.NewLabel("role", "frontend", labels.LabelSourceK8s),
+		labels.NewLabel(policy.JoinPath(k8sConst.PodNamespaceMetaLabels, "project"), "myproject", labels.LabelSourceK8s),
+	}
+
+	// should be ALLOWED with the namespace label properly set
+	c.Assert(repo.AllowsIngressRLocked(&ctx), Equals, api.Allowed)
+
+	ctx.From = labels.LabelArray{
+		labels.NewLabel(k8sConst.PodNamespaceLabel, slim_metav1.NamespaceDefault, labels.LabelSourceK8s),
+		labels.NewLabel("app", "inventory", labels.LabelSourceK8s),
+	}
+
+	// should be ALLOWED since all rules in From must match
+	c.Assert(repo.AllowsIngressRLocked(&ctx), Equals, api.Allowed)
+
+	// Egress context
+	ctx = policy.SearchContext{
+		From: endpointLabels,
+		To: labels.LabelArray{
+			labels.NewLabel(k8sConst.PodNamespaceLabel, slim_metav1.NamespaceDefault, labels.LabelSourceK8s),
+			labels.NewLabel("app", "db1", labels.LabelSourceK8s),
+		},
+		Trace: policy.TRACE_VERBOSE,
+	}
+
+	// should be DENIED because DPorts are missing in context
+	c.Assert(repo.AllowsEgressRLocked(&ctx), Equals, api.Denied)
+
+	ctx.DPorts = []*models.Port{{Port: 5432, Protocol: models.PortProtocolTCP}}
+
+	// should be ALLOWED with DPorts set correctly
+	c.Assert(repo.AllowsEgressRLocked(&ctx), Equals, api.Allowed)
+
+	ctx.To = labels.LabelArray{
+		labels.NewLabel(k8sConst.PodNamespaceLabel, slim_metav1.NamespaceDefault, labels.LabelSourceK8s),
+		labels.NewLabel("app", "db2", labels.LabelSourceK8s),
+	}
+
+	// should be ALLOWED for db2 as well
+	c.Assert(repo.AllowsEgressRLocked(&ctx), Equals, api.Allowed)
 }
 
 func (s *K8sSuite) TestParseNetworkPolicyNoSelectors(c *C) {
@@ -246,33 +398,36 @@ func (s *K8sSuite) TestParseNetworkPolicyNoSelectors(c *C) {
 	}
 
 	epSelector := api.NewESFromLabels(fromEndpoints...)
-	np := networkingv1.NetworkPolicy{}
+	np := slim_networkingv1.NetworkPolicy{}
 	err := json.Unmarshal(ex1, &np)
 	c.Assert(err, IsNil)
 
-	expectedRules := api.Rules{
-		&api.Rule{
-			EndpointSelector: epSelector,
-			Ingress: []api.IngressRule{
-				{
-					FromCIDRSet: []api.CIDRRule{
-						{
-							Cidr: api.CIDR("10.0.0.0/8"),
-							ExceptCIDRs: []api.CIDR{
-								"10.96.0.0/12",
-							},
+	expectedRule := api.NewRule().
+		WithEndpointSelector(epSelector).
+		WithIngressRules([]api.IngressRule{
+			{
+				FromCIDRSet: []api.CIDRRule{
+					{
+						Cidr: api.CIDR("10.0.0.0/8"),
+						ExceptCIDRs: []api.CIDR{
+							"10.96.0.0/12",
 						},
 					},
 				},
 			},
-			Egress: []api.EgressRule{},
-			Labels: labels.ParseLabelArray(
-				"k8s:"+k8sConst.PolicyLabelName+"=ingress-cidr-test",
-				"k8s:"+k8sConst.PolicyLabelUID+"=11bba160-ddca-11e8-b697-0800273b04ff",
-				"k8s:"+k8sConst.PolicyLabelNamespace+"=myns",
-				"k8s:"+k8sConst.PolicyLabelDerivedFrom+"="+resourceTypeNetworkPolicy,
-			),
-		},
+		}).
+		WithEgressRules([]api.EgressRule{}).
+		WithLabels(labels.ParseLabelArray(
+			"k8s:"+k8sConst.PolicyLabelName+"=ingress-cidr-test",
+			"k8s:"+k8sConst.PolicyLabelUID+"=11bba160-ddca-11e8-b697-0800273b04ff",
+			"k8s:"+k8sConst.PolicyLabelNamespace+"=myns",
+			"k8s:"+k8sConst.PolicyLabelDerivedFrom+"="+resourceTypeNetworkPolicy,
+		))
+
+	expectedRule.Sanitize()
+
+	expectedRules := api.Rules{
+		expectedRule,
 	}
 
 	rules, err := ParseNetworkPolicy(&np)
@@ -283,19 +438,19 @@ func (s *K8sSuite) TestParseNetworkPolicyNoSelectors(c *C) {
 
 func (s *K8sSuite) TestParseNetworkPolicyEgress(c *C) {
 
-	netPolicy := &networkingv1.NetworkPolicy{
-		Spec: networkingv1.NetworkPolicySpec{
-			PodSelector: metav1.LabelSelector{
+	netPolicy := &slim_networkingv1.NetworkPolicy{
+		Spec: slim_networkingv1.NetworkPolicySpec{
+			PodSelector: slim_metav1.LabelSelector{
 				MatchLabels: map[string]string{
 					"foo1": "bar1",
 					"foo2": "bar2",
 				},
 			},
-			Egress: []networkingv1.NetworkPolicyEgressRule{
+			Egress: []slim_networkingv1.NetworkPolicyEgressRule{
 				{
-					To: []networkingv1.NetworkPolicyPeer{
+					To: []slim_networkingv1.NetworkPolicyPeer{
 						{
-							PodSelector: &metav1.LabelSelector{
+							PodSelector: &slim_metav1.LabelSelector{
 								MatchLabels: map[string]string{
 									"foo3": "bar3",
 									"foo4": "bar4",
@@ -303,7 +458,7 @@ func (s *K8sSuite) TestParseNetworkPolicyEgress(c *C) {
 							},
 						},
 					},
-					Ports: []networkingv1.NetworkPolicyPort{
+					Ports: []slim_networkingv1.NetworkPolicyPort{
 						{
 							Port: &intstr.IntOrString{
 								Type:   intstr.Int,
@@ -321,13 +476,13 @@ func (s *K8sSuite) TestParseNetworkPolicyEgress(c *C) {
 	c.Assert(len(rules), Equals, 1)
 
 	fromEndpoints := labels.LabelArray{
-		labels.NewLabel(k8sConst.PodNamespaceLabel, v1.NamespaceDefault, labels.LabelSourceK8s),
+		labels.NewLabel(k8sConst.PodNamespaceLabel, slim_metav1.NamespaceDefault, labels.LabelSourceK8s),
 		labels.NewLabel("foo1", "bar1", labels.LabelSourceK8s),
 		labels.NewLabel("foo2", "bar2", labels.LabelSourceK8s),
 	}
 
 	toEndpoints := labels.LabelArray{
-		labels.NewLabel(k8sConst.PodNamespaceLabel, v1.NamespaceDefault, labels.LabelSourceK8s),
+		labels.NewLabel(k8sConst.PodNamespaceLabel, slim_metav1.NamespaceDefault, labels.LabelSourceK8s),
 		labels.NewLabel("foo3", "bar3", labels.LabelSourceK8s),
 		labels.NewLabel("foo4", "bar4", labels.LabelSourceK8s),
 	}
@@ -338,23 +493,25 @@ func (s *K8sSuite) TestParseNetworkPolicyEgress(c *C) {
 		Trace: policy.TRACE_VERBOSE,
 	}
 
-	repo := policy.NewPolicyRepository()
+	repo := testNewPolicyRepository()
 	repo.AddList(rules)
 	// Because search context did not contain port-specific policy, deny is
 	// expected.
 	c.Assert(repo.AllowsEgressRLocked(&ctx), Equals, api.Denied)
 
 	epSelector := api.NewESFromLabels(toEndpoints...)
+	cachedEPSelector, _ := repo.GetSelectorCache().AddIdentitySelector(dummySelectorCacheUser, epSelector)
+	defer func() { repo.GetSelectorCache().RemoveSelector(cachedEPSelector, dummySelectorCacheUser) }()
+
 	egressL4Policy, err := repo.ResolveL4EgressPolicy(&ctx)
 	c.Assert(egressL4Policy, Not(IsNil))
 	c.Assert(err, IsNil)
-	c.Assert(egressL4Policy, checker.DeepEquals, &policy.L4PolicyMap{
+	c.Assert(egressL4Policy, checker.DeepEquals, policy.L4PolicyMap{
 		"80/TCP": {
 			Port: 80, Protocol: api.ProtoTCP, U8Proto: 6,
-			Endpoints:    []api.EndpointSelector{epSelector},
-			L7Parser:     policy.ParserTypeNone,
-			L7RulesPerEp: policy.L7DataMap{},
-			Ingress:      false,
+			L7Parser:           policy.ParserTypeNone,
+			L7RulesPerSelector: policy.L7DataMap{cachedEPSelector: nil},
+			Ingress:            false,
 			DerivedFromRules: []labels.LabelArray{
 				labels.ParseLabelArray(
 					"k8s:"+k8sConst.PolicyLabelName,
@@ -365,13 +522,14 @@ func (s *K8sSuite) TestParseNetworkPolicyEgress(c *C) {
 			},
 		},
 	})
+	egressL4Policy.Detach(repo.GetSelectorCache())
 
 	ctx.From = labels.LabelArray{
 		labels.NewLabel("foo2", "bar2", labels.LabelSourceK8s),
 	}
 
 	// ctx.From needs to have all labels from the policy in order to be accepted
-	c.Assert(repo.CanReachEgressRLocked(&ctx), Not(Equals), api.Allowed)
+	c.Assert(repo.AllowsEgressRLocked(&ctx), Not(Equals), api.Allowed)
 
 	ctx = policy.SearchContext{
 		To: labels.LabelArray{
@@ -385,34 +543,34 @@ func (s *K8sSuite) TestParseNetworkPolicyEgress(c *C) {
 	}
 
 	// ctx.To also needs to have all labels from the policy in order to be accepted.
-	c.Assert(repo.CanReachEgressRLocked(&ctx), Not(Equals), api.Allowed)
+	c.Assert(repo.AllowsEgressRLocked(&ctx), Not(Equals), api.Allowed)
 }
 
-func parseAndAddRules(c *C, p *networkingv1.NetworkPolicy) *policy.Repository {
-	repo := policy.NewPolicyRepository()
+func parseAndAddRules(c *C, p *slim_networkingv1.NetworkPolicy) *policy.Repository {
+	repo := testNewPolicyRepository()
 	rules, err := ParseNetworkPolicy(p)
 	c.Assert(err, IsNil)
 	rev := repo.GetRevision()
-	id := repo.AddList(rules)
+	_, id := repo.AddList(rules)
 	c.Assert(id, Equals, rev+1)
 
 	return repo
 }
 
 func (s *K8sSuite) TestParseNetworkPolicyEgressAllowAll(c *C) {
-	repo := parseAndAddRules(c, &networkingv1.NetworkPolicy{
-		Spec: networkingv1.NetworkPolicySpec{
+	repo := parseAndAddRules(c, &slim_networkingv1.NetworkPolicy{
+		Spec: slim_networkingv1.NetworkPolicySpec{
 			PodSelector: labelSelectorA,
-			Egress: []networkingv1.NetworkPolicyEgressRule{
+			Egress: []slim_networkingv1.NetworkPolicyEgressRule{
 				{
-					To: []networkingv1.NetworkPolicyPeer{},
+					To: []slim_networkingv1.NetworkPolicyPeer{},
 				},
 			},
 		},
 	})
 
 	c.Assert(repo.AllowsEgressRLocked(&ctxAToB), Equals, api.Allowed)
-	c.Assert(repo.CanReachEgressRLocked(&ctxAToC), Equals, api.Allowed)
+	c.Assert(repo.AllowsEgressRLocked(&ctxAToC), Equals, api.Allowed)
 
 	ctxAToC80 := ctxAToC
 	ctxAToC80.DPorts = []*models.Port{{Port: 80, Protocol: models.PortProtocolTCP}}
@@ -424,13 +582,13 @@ func (s *K8sSuite) TestParseNetworkPolicyEgressAllowAll(c *C) {
 }
 
 func (s *K8sSuite) TestParseNetworkPolicyEgressL4AllowAll(c *C) {
-	repo := parseAndAddRules(c, &networkingv1.NetworkPolicy{
-		Spec: networkingv1.NetworkPolicySpec{
+	repo := parseAndAddRules(c, &slim_networkingv1.NetworkPolicy{
+		Spec: slim_networkingv1.NetworkPolicySpec{
 			PodSelector: labelSelectorA,
-			Egress: []networkingv1.NetworkPolicyEgressRule{
+			Egress: []slim_networkingv1.NetworkPolicyEgressRule{
 				{
-					Ports: []networkingv1.NetworkPolicyPort{port80},
-					To:    []networkingv1.NetworkPolicyPeer{},
+					Ports: []slim_networkingv1.NetworkPolicyPort{port80},
+					To:    []slim_networkingv1.NetworkPolicyPeer{},
 				},
 			},
 		},
@@ -446,12 +604,12 @@ func (s *K8sSuite) TestParseNetworkPolicyEgressL4AllowAll(c *C) {
 }
 
 func (s *K8sSuite) TestParseNetworkPolicyIngressAllowAll(c *C) {
-	repo := parseAndAddRules(c, &networkingv1.NetworkPolicy{
-		Spec: networkingv1.NetworkPolicySpec{
+	repo := parseAndAddRules(c, &slim_networkingv1.NetworkPolicy{
+		Spec: slim_networkingv1.NetworkPolicySpec{
 			PodSelector: labelSelectorC,
-			Ingress: []networkingv1.NetworkPolicyIngressRule{
+			Ingress: []slim_networkingv1.NetworkPolicyIngressRule{
 				{
-					From: []networkingv1.NetworkPolicyPeer{},
+					From: []slim_networkingv1.NetworkPolicyPeer{},
 				},
 			},
 		},
@@ -470,13 +628,13 @@ func (s *K8sSuite) TestParseNetworkPolicyIngressAllowAll(c *C) {
 }
 
 func (s *K8sSuite) TestParseNetworkPolicyIngressL4AllowAll(c *C) {
-	repo := parseAndAddRules(c, &networkingv1.NetworkPolicy{
-		Spec: networkingv1.NetworkPolicySpec{
+	repo := parseAndAddRules(c, &slim_networkingv1.NetworkPolicy{
+		Spec: slim_networkingv1.NetworkPolicySpec{
 			PodSelector: labelSelectorC,
-			Ingress: []networkingv1.NetworkPolicyIngressRule{
+			Ingress: []slim_networkingv1.NetworkPolicyIngressRule{
 				{
-					Ports: []networkingv1.NetworkPolicyPort{port80},
-					From:  []networkingv1.NetworkPolicyPeer{},
+					Ports: []slim_networkingv1.NetworkPolicyPort{port80},
+					From:  []slim_networkingv1.NetworkPolicyPeer{},
 				},
 			},
 		},
@@ -493,17 +651,42 @@ func (s *K8sSuite) TestParseNetworkPolicyIngressL4AllowAll(c *C) {
 	c.Assert(repo.AllowsIngressRLocked(&ctxAToC90), Equals, api.Denied)
 }
 
-func (s *K8sSuite) TestParseNetworkPolicyUnknownProto(c *C) {
-	netPolicy := &networkingv1.NetworkPolicy{
-		Spec: networkingv1.NetworkPolicySpec{
-			Ingress: []networkingv1.NetworkPolicyIngressRule{
+func (s *K8sSuite) TestParseNetworkPolicyNamedPort(c *C) {
+	netPolicy := &slim_networkingv1.NetworkPolicy{
+		Spec: slim_networkingv1.NetworkPolicySpec{
+			Ingress: []slim_networkingv1.NetworkPolicyIngressRule{
 				{
-					Ports: []networkingv1.NetworkPolicyPort{
+					Ports: []slim_networkingv1.NetworkPolicyPort{
 						{
 							Port: &intstr.IntOrString{
 								Type:   intstr.String,
-								StrVal: "unknown",
+								StrVal: "port-80",
 							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	rules, err := ParseNetworkPolicy(netPolicy)
+	c.Assert(err, IsNil)
+	c.Assert(len(rules), Equals, 1)
+}
+
+func (s *K8sSuite) TestParseNetworkPolicyUnknownProto(c *C) {
+	unknownProtocol := slim_corev1.Protocol("unknown")
+	netPolicy := &slim_networkingv1.NetworkPolicy{
+		Spec: slim_networkingv1.NetworkPolicySpec{
+			Ingress: []slim_networkingv1.NetworkPolicyIngressRule{
+				{
+					Ports: []slim_networkingv1.NetworkPolicyPort{
+						{
+							Port: &intstr.IntOrString{
+								Type:   intstr.String,
+								StrVal: "port-80",
+							},
+							Protocol: &unknownProtocol,
 						},
 					},
 				},
@@ -518,14 +701,14 @@ func (s *K8sSuite) TestParseNetworkPolicyUnknownProto(c *C) {
 
 func (s *K8sSuite) TestParseNetworkPolicyEmptyFrom(c *C) {
 	// From missing, all sources should be allowed
-	netPolicy1 := &networkingv1.NetworkPolicy{
-		Spec: networkingv1.NetworkPolicySpec{
-			PodSelector: metav1.LabelSelector{
+	netPolicy1 := &slim_networkingv1.NetworkPolicy{
+		Spec: slim_networkingv1.NetworkPolicySpec{
+			PodSelector: slim_metav1.LabelSelector{
 				MatchLabels: map[string]string{
 					"foo1": "bar1",
 				},
 			},
-			Ingress: []networkingv1.NetworkPolicyIngressRule{
+			Ingress: []slim_networkingv1.NetworkPolicyIngressRule{
 				{},
 			},
 		},
@@ -537,32 +720,32 @@ func (s *K8sSuite) TestParseNetworkPolicyEmptyFrom(c *C) {
 
 	ctx := policy.SearchContext{
 		From: labels.LabelArray{
-			labels.NewLabel(k8sConst.PodNamespaceLabel, v1.NamespaceDefault, labels.LabelSourceK8s),
+			labels.NewLabel(k8sConst.PodNamespaceLabel, slim_metav1.NamespaceDefault, labels.LabelSourceK8s),
 			labels.NewLabel("foo0", "bar0", labels.LabelSourceK8s),
 		},
 		To: labels.LabelArray{
-			labels.NewLabel(k8sConst.PodNamespaceLabel, v1.NamespaceDefault, labels.LabelSourceK8s),
+			labels.NewLabel(k8sConst.PodNamespaceLabel, slim_metav1.NamespaceDefault, labels.LabelSourceK8s),
 			labels.NewLabel("foo1", "bar1", labels.LabelSourceK8s),
 		},
 		Trace: policy.TRACE_VERBOSE,
 	}
 
-	repo := policy.NewPolicyRepository()
+	repo := testNewPolicyRepository()
 	repo.AddList(rules)
-	c.Assert(repo.CanReachIngressRLocked(&ctx), Equals, api.Allowed)
+	c.Assert(repo.AllowsIngressRLocked(&ctx), Equals, api.Allowed)
 
 	// Empty From rules, all sources should be allowed
-	netPolicy2 := &networkingv1.NetworkPolicy{
-		Spec: networkingv1.NetworkPolicySpec{
-			PodSelector: metav1.LabelSelector{
+	netPolicy2 := &slim_networkingv1.NetworkPolicy{
+		Spec: slim_networkingv1.NetworkPolicySpec{
+			PodSelector: slim_metav1.LabelSelector{
 				MatchLabels: map[string]string{
 					"foo1": "bar1",
 				},
 			},
-			Ingress: []networkingv1.NetworkPolicyIngressRule{
+			Ingress: []slim_networkingv1.NetworkPolicyIngressRule{
 				{
-					From:  []networkingv1.NetworkPolicyPeer{},
-					Ports: []networkingv1.NetworkPolicyPort{},
+					From:  []slim_networkingv1.NetworkPolicyPeer{},
+					Ports: []slim_networkingv1.NetworkPolicyPort{},
 				},
 			},
 		},
@@ -571,16 +754,16 @@ func (s *K8sSuite) TestParseNetworkPolicyEmptyFrom(c *C) {
 	rules, err = ParseNetworkPolicy(netPolicy2)
 	c.Assert(err, IsNil)
 	c.Assert(len(rules), Equals, 1)
-	repo = policy.NewPolicyRepository()
+	repo = testNewPolicyRepository()
 	repo.AddList(rules)
-	c.Assert(repo.CanReachIngressRLocked(&ctx), Equals, api.Allowed)
+	c.Assert(repo.AllowsIngressRLocked(&ctx), Equals, api.Allowed)
 }
 
 func (s *K8sSuite) TestParseNetworkPolicyDenyAll(c *C) {
 	// From missing, all sources should be allowed
-	netPolicy1 := &networkingv1.NetworkPolicy{
-		Spec: networkingv1.NetworkPolicySpec{
-			PodSelector: metav1.LabelSelector{
+	netPolicy1 := &slim_networkingv1.NetworkPolicy{
+		Spec: slim_networkingv1.NetworkPolicySpec{
+			PodSelector: slim_metav1.LabelSelector{
 				MatchLabels: map[string]string{},
 			},
 		},
@@ -592,25 +775,25 @@ func (s *K8sSuite) TestParseNetworkPolicyDenyAll(c *C) {
 
 	ctx := policy.SearchContext{
 		From: labels.LabelArray{
-			labels.NewLabel(k8sConst.PodNamespaceLabel, v1.NamespaceDefault, labels.LabelSourceK8s),
+			labels.NewLabel(k8sConst.PodNamespaceLabel, slim_metav1.NamespaceDefault, labels.LabelSourceK8s),
 			labels.NewLabel("foo0", "bar0", labels.LabelSourceK8s),
 		},
 		To: labels.LabelArray{
-			labels.NewLabel(k8sConst.PodNamespaceLabel, v1.NamespaceDefault, labels.LabelSourceK8s),
+			labels.NewLabel(k8sConst.PodNamespaceLabel, slim_metav1.NamespaceDefault, labels.LabelSourceK8s),
 			labels.NewLabel("foo1", "bar1", labels.LabelSourceK8s),
 		},
 		Trace: policy.TRACE_VERBOSE,
 	}
 
-	repo := policy.NewPolicyRepository()
+	repo := testNewPolicyRepository()
 	repo.AddList(rules)
 	c.Assert(repo.AllowsIngressRLocked(&ctx), Equals, api.Denied)
 }
 
 func (s *K8sSuite) TestParseNetworkPolicyNoIngress(c *C) {
-	netPolicy := &networkingv1.NetworkPolicy{
-		Spec: networkingv1.NetworkPolicySpec{
-			PodSelector: metav1.LabelSelector{
+	netPolicy := &slim_networkingv1.NetworkPolicy{
+		Spec: slim_networkingv1.NetworkPolicySpec{
+			PodSelector: slim_metav1.LabelSelector{
 				MatchLabels: map[string]string{
 					"foo1": "bar1",
 					"foo2": "bar2",
@@ -661,7 +844,7 @@ func (s *K8sSuite) TestNetworkPolicyExamples(c *C) {
     ]
   }
 }`)
-	np := networkingv1.NetworkPolicy{}
+	np := slim_networkingv1.NetworkPolicy{}
 	err := json.Unmarshal(ex1, &np)
 	c.Assert(err, IsNil)
 
@@ -705,7 +888,7 @@ func (s *K8sSuite) TestNetworkPolicyExamples(c *C) {
     ]
   }
 }`)
-	np = networkingv1.NetworkPolicy{}
+	np = slim_networkingv1.NetworkPolicy{}
 	err = json.Unmarshal(ex1, &np)
 	c.Assert(err, IsNil)
 
@@ -713,7 +896,7 @@ func (s *K8sSuite) TestNetworkPolicyExamples(c *C) {
 	c.Assert(err, IsNil)
 	c.Assert(len(rules), Equals, 1)
 
-	repo := policy.NewPolicyRepository()
+	repo := testNewPolicyRepository()
 	repo.AddList(rules)
 	ctx := policy.SearchContext{
 		From: labels.LabelArray{
@@ -730,7 +913,7 @@ func (s *K8sSuite) TestNetworkPolicyExamples(c *C) {
 
 	ctx = policy.SearchContext{
 		From: labels.LabelArray{
-			labels.NewLabel(k8sConst.PodNamespaceLabel, v1.NamespaceDefault, labels.LabelSourceK8s),
+			labels.NewLabel(k8sConst.PodNamespaceLabel, slim_metav1.NamespaceDefault, labels.LabelSourceK8s),
 			labels.NewLabel("role", "frontend", labels.LabelSourceK8s),
 		},
 		To: labels.LabelArray{
@@ -797,7 +980,7 @@ func (s *K8sSuite) TestNetworkPolicyExamples(c *C) {
   }
 }`)
 
-	np = networkingv1.NetworkPolicy{}
+	np = slim_networkingv1.NetworkPolicy{}
 	err = json.Unmarshal(ex2, &np)
 	c.Assert(err, IsNil)
 
@@ -839,7 +1022,7 @@ func (s *K8sSuite) TestNetworkPolicyExamples(c *C) {
   }
 }`)
 
-	np = networkingv1.NetworkPolicy{}
+	np = slim_networkingv1.NetworkPolicy{}
 	err = json.Unmarshal(ex2, &np)
 	c.Assert(err, IsNil)
 
@@ -847,15 +1030,15 @@ func (s *K8sSuite) TestNetworkPolicyExamples(c *C) {
 	c.Assert(err, IsNil)
 	c.Assert(len(rules), Equals, 1)
 
-	repo = policy.NewPolicyRepository()
+	repo = testNewPolicyRepository()
 	repo.AddList(rules)
 	ctx = policy.SearchContext{
 		From: labels.LabelArray{
-			labels.NewLabel(k8sConst.PodNamespaceLabel, v1.NamespaceDefault, labels.LabelSourceK8s),
+			labels.NewLabel(k8sConst.PodNamespaceLabel, slim_metav1.NamespaceDefault, labels.LabelSourceK8s),
 			labels.NewLabel(policy.JoinPath(k8sConst.PodNamespaceMetaLabels, "user"), "bob", labels.LabelSourceK8s),
 		},
 		To: labels.LabelArray{
-			labels.NewLabel(k8sConst.PodNamespaceLabel, v1.NamespaceDefault, labels.LabelSourceK8s),
+			labels.NewLabel(k8sConst.PodNamespaceLabel, slim_metav1.NamespaceDefault, labels.LabelSourceK8s),
 			labels.NewLabel("role", "frontend", labels.LabelSourceK8s),
 		},
 		Trace: policy.TRACE_VERBOSE,
@@ -868,6 +1051,7 @@ func (s *K8sSuite) TestNetworkPolicyExamples(c *C) {
 	l4Policy, err := repo.ResolveL4IngressPolicy(&ctx)
 	c.Assert(l4Policy, Not(IsNil))
 	c.Assert(err, IsNil)
+	l4Policy.Detach(repo.GetSelectorCache())
 
 	ctx = policy.SearchContext{
 		From: labels.LabelArray{
@@ -881,7 +1065,7 @@ func (s *K8sSuite) TestNetworkPolicyExamples(c *C) {
 			},
 		},
 		To: labels.LabelArray{
-			labels.NewLabel(k8sConst.PodNamespaceLabel, v1.NamespaceDefault, labels.LabelSourceK8s),
+			labels.NewLabel(k8sConst.PodNamespaceLabel, slim_metav1.NamespaceDefault, labels.LabelSourceK8s),
 			labels.NewLabel("role", "frontend", labels.LabelSourceK8s),
 		},
 		Trace: policy.TRACE_VERBOSE,
@@ -906,7 +1090,7 @@ func (s *K8sSuite) TestNetworkPolicyExamples(c *C) {
   }
 }`)
 
-	np = networkingv1.NetworkPolicy{}
+	np = slim_networkingv1.NetworkPolicy{}
 	err = json.Unmarshal(ex3, &np)
 	c.Assert(err, IsNil)
 
@@ -914,7 +1098,7 @@ func (s *K8sSuite) TestNetworkPolicyExamples(c *C) {
 	c.Assert(err, IsNil)
 	c.Assert(len(rules), Equals, 1)
 
-	repo = policy.NewPolicyRepository()
+	repo = testNewPolicyRepository()
 	repo.AddList(rules)
 	ctx = policy.SearchContext{
 		From: labels.LabelArray{
@@ -922,7 +1106,7 @@ func (s *K8sSuite) TestNetworkPolicyExamples(c *C) {
 			labels.NewLabel(policy.JoinPath(k8sConst.PodNamespaceMetaLabels, "user"), "bob", labels.LabelSourceK8s),
 		},
 		To: labels.LabelArray{
-			labels.NewLabel(k8sConst.PodNamespaceLabel, v1.NamespaceDefault, labels.LabelSourceK8s),
+			labels.NewLabel(k8sConst.PodNamespaceLabel, slim_metav1.NamespaceDefault, labels.LabelSourceK8s),
 			labels.NewLabel("role", "backend", labels.LabelSourceK8s),
 		},
 		Trace: policy.TRACE_VERBOSE,
@@ -932,11 +1116,11 @@ func (s *K8sSuite) TestNetworkPolicyExamples(c *C) {
 
 	ctx = policy.SearchContext{
 		From: labels.LabelArray{
-			labels.NewLabel(k8sConst.PodNamespaceLabel, v1.NamespaceDefault, labels.LabelSourceK8s),
+			labels.NewLabel(k8sConst.PodNamespaceLabel, slim_metav1.NamespaceDefault, labels.LabelSourceK8s),
 			labels.NewLabel(policy.JoinPath(k8sConst.PodNamespaceMetaLabels, "user"), "bob", labels.LabelSourceK8s),
 		},
 		To: labels.LabelArray{
-			labels.NewLabel(k8sConst.PodNamespaceLabel, v1.NamespaceDefault, labels.LabelSourceK8s),
+			labels.NewLabel(k8sConst.PodNamespaceLabel, slim_metav1.NamespaceDefault, labels.LabelSourceK8s),
 			labels.NewLabel("role", "backend", labels.LabelSourceK8s),
 		},
 		Trace: policy.TRACE_VERBOSE,
@@ -946,11 +1130,11 @@ func (s *K8sSuite) TestNetworkPolicyExamples(c *C) {
 
 	ctx = policy.SearchContext{
 		From: labels.LabelArray{
-			labels.NewLabel(k8sConst.PodNamespaceLabel, v1.NamespaceDefault, labels.LabelSourceK8s),
+			labels.NewLabel(k8sConst.PodNamespaceLabel, slim_metav1.NamespaceDefault, labels.LabelSourceK8s),
 			labels.NewLabel(policy.JoinPath(k8sConst.PodNamespaceMetaLabels, "user"), "bob", labels.LabelSourceK8s),
 		},
 		To: labels.LabelArray{
-			labels.NewLabel(k8sConst.PodNamespaceLabel, v1.NamespaceDefault, labels.LabelSourceK8s),
+			labels.NewLabel(k8sConst.PodNamespaceLabel, slim_metav1.NamespaceDefault, labels.LabelSourceK8s),
 			labels.NewLabel("role", "backend", labels.LabelSourceK8s),
 		},
 		DPorts: []*models.Port{
@@ -1000,7 +1184,7 @@ func (s *K8sSuite) TestNetworkPolicyExamples(c *C) {
   }
 }`)
 
-	np = networkingv1.NetworkPolicy{}
+	np = slim_networkingv1.NetworkPolicy{}
 	err = json.Unmarshal(ex4, &np)
 	c.Assert(err, IsNil)
 
@@ -1045,7 +1229,7 @@ func (s *K8sSuite) TestNetworkPolicyExamples(c *C) {
   }
 }`)
 
-	np = networkingv1.NetworkPolicy{}
+	np = slim_networkingv1.NetworkPolicy{}
 	err = json.Unmarshal(ex4, &np)
 	c.Assert(err, IsNil)
 
@@ -1053,11 +1237,11 @@ func (s *K8sSuite) TestNetworkPolicyExamples(c *C) {
 	c.Assert(err, IsNil)
 	c.Assert(len(rules), Equals, 1)
 
-	repo = policy.NewPolicyRepository()
+	repo = testNewPolicyRepository()
 	// add example 4
 	repo.AddList(rules)
 
-	np = networkingv1.NetworkPolicy{}
+	np = slim_networkingv1.NetworkPolicy{}
 	err = json.Unmarshal(ex2, &np)
 	c.Assert(err, IsNil)
 
@@ -1068,7 +1252,7 @@ func (s *K8sSuite) TestNetworkPolicyExamples(c *C) {
 
 	ctx = policy.SearchContext{
 		From: labels.LabelArray{
-			labels.NewLabel(k8sConst.PodNamespaceLabel, v1.NamespaceDefault, labels.LabelSourceK8s),
+			labels.NewLabel(k8sConst.PodNamespaceLabel, slim_metav1.NamespaceDefault, labels.LabelSourceK8s),
 			labels.NewLabel(policy.JoinPath(k8sConst.PodNamespaceMetaLabels, "user"), "bob", labels.LabelSourceK8s),
 		},
 		DPorts: []*models.Port{
@@ -1078,7 +1262,7 @@ func (s *K8sSuite) TestNetworkPolicyExamples(c *C) {
 			},
 		},
 		To: labels.LabelArray{
-			labels.NewLabel(k8sConst.PodNamespaceLabel, v1.NamespaceDefault, labels.LabelSourceK8s),
+			labels.NewLabel(k8sConst.PodNamespaceLabel, slim_metav1.NamespaceDefault, labels.LabelSourceK8s),
 			labels.NewLabel("role", "frontend", labels.LabelSourceK8s),
 		},
 		Trace: policy.TRACE_VERBOSE,
@@ -1088,7 +1272,7 @@ func (s *K8sSuite) TestNetworkPolicyExamples(c *C) {
 
 	ctx = policy.SearchContext{
 		From: labels.LabelArray{
-			labels.NewLabel(k8sConst.PodNamespaceLabel, v1.NamespaceDefault, labels.LabelSourceK8s),
+			labels.NewLabel(k8sConst.PodNamespaceLabel, slim_metav1.NamespaceDefault, labels.LabelSourceK8s),
 			labels.NewLabel(policy.JoinPath(k8sConst.PodNamespaceMetaLabels, "user"), "bob", labels.LabelSourceK8s),
 		},
 		DPorts: []*models.Port{
@@ -1098,7 +1282,7 @@ func (s *K8sSuite) TestNetworkPolicyExamples(c *C) {
 			},
 		},
 		To: labels.LabelArray{
-			labels.NewLabel(k8sConst.PodNamespaceLabel, v1.NamespaceDefault, labels.LabelSourceK8s),
+			labels.NewLabel(k8sConst.PodNamespaceLabel, slim_metav1.NamespaceDefault, labels.LabelSourceK8s),
 			labels.NewLabel("role", "frontend", labels.LabelSourceK8s),
 		},
 		Trace: policy.TRACE_VERBOSE,
@@ -1108,7 +1292,7 @@ func (s *K8sSuite) TestNetworkPolicyExamples(c *C) {
 
 	ctx = policy.SearchContext{
 		From: labels.LabelArray{
-			labels.NewLabel(k8sConst.PodNamespaceLabel, v1.NamespaceDefault, labels.LabelSourceK8s),
+			labels.NewLabel(k8sConst.PodNamespaceLabel, slim_metav1.NamespaceDefault, labels.LabelSourceK8s),
 			labels.NewLabel(policy.JoinPath(k8sConst.PodNamespaceMetaLabels, "user"), "alice", labels.LabelSourceK8s),
 		},
 		DPorts: []*models.Port{
@@ -1118,7 +1302,7 @@ func (s *K8sSuite) TestNetworkPolicyExamples(c *C) {
 			},
 		},
 		To: labels.LabelArray{
-			labels.NewLabel(k8sConst.PodNamespaceLabel, v1.NamespaceDefault, labels.LabelSourceK8s),
+			labels.NewLabel(k8sConst.PodNamespaceLabel, slim_metav1.NamespaceDefault, labels.LabelSourceK8s),
 			labels.NewLabel("role", "frontend", labels.LabelSourceK8s),
 		},
 		Trace: policy.TRACE_VERBOSE,
@@ -1194,7 +1378,7 @@ func (s *K8sSuite) TestNetworkPolicyExamples(c *C) {
   }
 }`)
 
-	np = networkingv1.NetworkPolicy{}
+	np = slim_networkingv1.NetworkPolicy{}
 	err = json.Unmarshal(ex5, &np)
 	c.Assert(err, IsNil)
 
@@ -1338,7 +1522,7 @@ func (s *K8sSuite) TestCIDRPolicyExamples(c *C) {
     ]
   }
 }`)
-	np := networkingv1.NetworkPolicy{}
+	np := slim_networkingv1.NetworkPolicy{}
 	err := json.Unmarshal(ex1, &np)
 	c.Assert(err, IsNil)
 
@@ -1386,7 +1570,7 @@ func (s *K8sSuite) TestCIDRPolicyExamples(c *C) {
   }
 }`)
 
-	np = networkingv1.NetworkPolicy{}
+	np = slim_networkingv1.NetworkPolicy{}
 	err = json.Unmarshal(ex2, &np)
 	c.Assert(err, IsNil)
 
@@ -1402,11 +1586,11 @@ func (s *K8sSuite) TestCIDRPolicyExamples(c *C) {
 	}
 
 	expectedCIDRs = []api.CIDR{"11.96.0.0/12", "11.255.255.254/32"}
-	for k, v := range rules[0].Egress[0].ToCIDRSet[1].ExceptCIDRs {
+	for k, v := range rules[0].Egress[1].ToCIDRSet[0].ExceptCIDRs {
 		c.Assert(v, Equals, expectedCIDRs[k])
 	}
 
-	c.Assert(len(rules[0].Egress), Equals, 1)
+	c.Assert(len(rules[0].Egress), Equals, 2)
 
 }
 
@@ -1417,7 +1601,7 @@ func getSelectorPointer(sel api.EndpointSelector) *api.EndpointSelector {
 func Test_parseNetworkPolicyPeer(t *testing.T) {
 	type args struct {
 		namespace string
-		peer      *networkingv1.NetworkPolicyPeer
+		peer      *slim_networkingv1.NetworkPolicyPeer
 	}
 	tests := []struct {
 		name string
@@ -1428,15 +1612,15 @@ func Test_parseNetworkPolicyPeer(t *testing.T) {
 			name: "peer-with-pod-selector",
 			args: args{
 				namespace: "foo-namespace",
-				peer: &networkingv1.NetworkPolicyPeer{
-					PodSelector: &metav1.LabelSelector{
+				peer: &slim_networkingv1.NetworkPolicyPeer{
+					PodSelector: &slim_metav1.LabelSelector{
 						MatchLabels: map[string]string{
 							"foo": "bar",
 						},
-						MatchExpressions: []metav1.LabelSelectorRequirement{
+						MatchExpressions: []slim_metav1.LabelSelectorRequirement{
 							{
 								Key:      "foo",
-								Operator: metav1.LabelSelectorOpIn,
+								Operator: slim_metav1.LabelSelectorOpIn,
 								Values:   []string{"bar", "baz"},
 							},
 						},
@@ -1449,10 +1633,10 @@ func Test_parseNetworkPolicyPeer(t *testing.T) {
 						"k8s.foo":                         "bar",
 						"k8s.io.kubernetes.pod.namespace": "foo-namespace",
 					},
-					[]metav1.LabelSelectorRequirement{
+					[]slim_metav1.LabelSelectorRequirement{
 						{
 							Key:      "k8s.foo",
-							Operator: metav1.LabelSelectorOpIn,
+							Operator: slim_metav1.LabelSelectorOpIn,
 							Values:   []string{"bar", "baz"},
 						},
 					},
@@ -1470,27 +1654,27 @@ func Test_parseNetworkPolicyPeer(t *testing.T) {
 			name: "peer-with-pod-selector-and-ns-selector",
 			args: args{
 				namespace: "foo-namespace",
-				peer: &networkingv1.NetworkPolicyPeer{
-					PodSelector: &metav1.LabelSelector{
+				peer: &slim_networkingv1.NetworkPolicyPeer{
+					PodSelector: &slim_metav1.LabelSelector{
 						MatchLabels: map[string]string{
 							"foo": "bar",
 						},
-						MatchExpressions: []metav1.LabelSelectorRequirement{
+						MatchExpressions: []slim_metav1.LabelSelectorRequirement{
 							{
 								Key:      "foo",
-								Operator: metav1.LabelSelectorOpIn,
+								Operator: slim_metav1.LabelSelectorOpIn,
 								Values:   []string{"bar", "baz"},
 							},
 						},
 					},
-					NamespaceSelector: &metav1.LabelSelector{
+					NamespaceSelector: &slim_metav1.LabelSelector{
 						MatchLabels: map[string]string{
 							"ns-foo": "ns-bar",
 						},
-						MatchExpressions: []metav1.LabelSelectorRequirement{
+						MatchExpressions: []slim_metav1.LabelSelectorRequirement{
 							{
 								Key:      "ns-foo-expression",
-								Operator: metav1.LabelSelectorOpExists,
+								Operator: slim_metav1.LabelSelectorOpExists,
 							},
 						},
 					},
@@ -1502,14 +1686,14 @@ func Test_parseNetworkPolicyPeer(t *testing.T) {
 						"k8s.foo": "bar",
 						"k8s.io.cilium.k8s.namespace.labels.ns-foo": "ns-bar",
 					},
-					[]metav1.LabelSelectorRequirement{
+					[]slim_metav1.LabelSelectorRequirement{
 						{
 							Key:      "k8s.io.cilium.k8s.namespace.labels.ns-foo-expression",
-							Operator: metav1.LabelSelectorOpExists,
+							Operator: slim_metav1.LabelSelectorOpExists,
 						},
 						{
 							Key:      "k8s.foo",
-							Operator: metav1.LabelSelectorOpIn,
+							Operator: slim_metav1.LabelSelectorOpIn,
 							Values:   []string{"bar", "baz"},
 						},
 					},
@@ -1520,15 +1704,15 @@ func Test_parseNetworkPolicyPeer(t *testing.T) {
 			name: "peer-with-ns-selector",
 			args: args{
 				namespace: "foo-namespace",
-				peer: &networkingv1.NetworkPolicyPeer{
-					NamespaceSelector: &metav1.LabelSelector{
+				peer: &slim_networkingv1.NetworkPolicyPeer{
+					NamespaceSelector: &slim_metav1.LabelSelector{
 						MatchLabels: map[string]string{
 							"ns-foo": "ns-bar",
 						},
-						MatchExpressions: []metav1.LabelSelectorRequirement{
+						MatchExpressions: []slim_metav1.LabelSelectorRequirement{
 							{
 								Key:      "ns-foo-expression",
-								Operator: metav1.LabelSelectorOpExists,
+								Operator: slim_metav1.LabelSelectorOpExists,
 							},
 						},
 					},
@@ -1539,10 +1723,10 @@ func Test_parseNetworkPolicyPeer(t *testing.T) {
 					map[string]string{
 						"k8s.io.cilium.k8s.namespace.labels.ns-foo": "ns-bar",
 					},
-					[]metav1.LabelSelectorRequirement{
+					[]slim_metav1.LabelSelectorRequirement{
 						{
 							Key:      "k8s.io.cilium.k8s.namespace.labels.ns-foo-expression",
-							Operator: metav1.LabelSelectorOpExists,
+							Operator: slim_metav1.LabelSelectorOpExists,
 						},
 					},
 				),
@@ -1552,17 +1736,17 @@ func Test_parseNetworkPolicyPeer(t *testing.T) {
 			name: "peer-with-allow-all-ns-selector",
 			args: args{
 				namespace: "foo-namespace",
-				peer: &networkingv1.NetworkPolicyPeer{
-					NamespaceSelector: &metav1.LabelSelector{},
+				peer: &slim_networkingv1.NetworkPolicyPeer{
+					NamespaceSelector: &slim_metav1.LabelSelector{},
 				},
 			},
 			want: getSelectorPointer(
 				api.NewESFromMatchRequirements(
 					map[string]string{},
-					[]metav1.LabelSelectorRequirement{
+					[]slim_metav1.LabelSelectorRequirement{
 						{
 							Key:      fmt.Sprintf("%s.%s", labels.LabelSourceK8s, k8sConst.PodNamespaceLabel),
-							Operator: metav1.LabelSelectorOpExists,
+							Operator: slim_metav1.LabelSelectorOpExists,
 						},
 					},
 				),
@@ -1584,22 +1768,22 @@ func Test_parseNetworkPolicyPeer(t *testing.T) {
 func (s *K8sSuite) TestGetPolicyLabelsv1(c *C) {
 	uuid := "1bba160-ddca-11e8-b697-0800273b04ff"
 	tests := []struct {
-		np          *networkingv1.NetworkPolicy // input network policy
-		name        string                      // expected extracted name
-		namespace   string                      // expected extracted namespace
-		uuid        string                      // expected extracted uuid
-		derivedFrom string                      // expected extracted derived
+		np          *slim_networkingv1.NetworkPolicy // input network policy
+		name        string                           // expected extracted name
+		namespace   string                           // expected extracted namespace
+		uuid        string                           // expected extracted uuid
+		derivedFrom string                           // expected extracted derived
 	}{
 		{
-			np:          &networkingv1.NetworkPolicy{},
+			np:          &slim_networkingv1.NetworkPolicy{},
 			name:        "",
-			namespace:   v1.NamespaceDefault,
+			namespace:   slim_metav1.NamespaceDefault,
 			uuid:        "",
 			derivedFrom: resourceTypeNetworkPolicy,
 		},
 		{
-			np: &networkingv1.NetworkPolicy{
-				ObjectMeta: metav1.ObjectMeta{
+			np: &slim_networkingv1.NetworkPolicy{
+				ObjectMeta: slim_metav1.ObjectMeta{
 					Annotations: map[string]string{
 						annotation.Name: "foo",
 					},
@@ -1607,12 +1791,12 @@ func (s *K8sSuite) TestGetPolicyLabelsv1(c *C) {
 			},
 			name:        "foo",
 			uuid:        "",
-			namespace:   v1.NamespaceDefault,
+			namespace:   slim_metav1.NamespaceDefault,
 			derivedFrom: resourceTypeNetworkPolicy,
 		},
 		{
-			np: &networkingv1.NetworkPolicy{
-				ObjectMeta: metav1.ObjectMeta{
+			np: &slim_networkingv1.NetworkPolicy{
+				ObjectMeta: slim_metav1.ObjectMeta{
 					Name:      "foo",
 					Namespace: "bar",
 					UID:       types.UID(uuid),
@@ -1636,16 +1820,16 @@ func (s *K8sSuite) TestGetPolicyLabelsv1(c *C) {
 
 		c.Assert(lbls, NotNil)
 		c.Assert(len(lbls), Equals, 4, Commentf(
-			"Incorrect number of labels: Expected Name, UID, Namespace and DerivedFrom labels."))
-		assertLabel(lbls[0], k8sConst.PolicyLabelName, tt.name)
-		assertLabel(lbls[1], k8sConst.PolicyLabelUID, tt.uuid)
-		assertLabel(lbls[2], k8sConst.PolicyLabelNamespace, tt.namespace)
-		assertLabel(lbls[3], k8sConst.PolicyLabelDerivedFrom, tt.derivedFrom)
+			"Incorrect number of labels: Expected DerivedFrom, Name, Namespace and UID labels."))
+		assertLabel(lbls[0], "io.cilium.k8s.policy.derived-from", tt.derivedFrom)
+		assertLabel(lbls[1], "io.cilium.k8s.policy.name", tt.name)
+		assertLabel(lbls[2], "io.cilium.k8s.policy.namespace", tt.namespace)
+		assertLabel(lbls[3], "io.cilium.k8s.policy.uid", tt.uuid)
 	}
 }
 
 func (s *K8sSuite) TestIPBlockToCIDRRule(c *C) {
-	blocks := []*networkingv1.IPBlock{
+	blocks := []*slim_networkingv1.IPBlock{
 		{},
 		{CIDR: "192.168.1.1/24"},
 		{CIDR: "192.168.1.1/24", Except: []string{}},

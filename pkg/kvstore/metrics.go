@@ -1,4 +1,4 @@
-// Copyright 2018 Authors of Cilium
+// Copyright 2018-2019 Authors of Cilium
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/cilium/cilium/pkg/metrics"
+	"github.com/cilium/cilium/pkg/option"
 )
 
 const (
@@ -40,10 +41,25 @@ func getScopeFromKey(key string) string {
 }
 
 func increaseMetric(key, kind, action string, duration time.Duration, err error) {
+	if !option.Config.MetricsConfig.KVStoreOperationsDurationEnabled {
+		return
+	}
 	namespace := getScopeFromKey(key)
 	outcome := metrics.Error2Outcome(err)
-	metrics.KVStoreOperationsTotal.
-		WithLabelValues(namespace, kind, action, outcome).Inc()
 	metrics.KVStoreOperationsDuration.
 		WithLabelValues(namespace, kind, action, outcome).Observe(duration.Seconds())
+}
+
+func trackEventQueued(key string, typ EventType, duration time.Duration) {
+	if !option.Config.MetricsConfig.KVStoreEventsQueueDurationEnabled {
+		return
+	}
+	metrics.KVStoreEventsQueueDuration.WithLabelValues(getScopeFromKey(key), typ.String()).Observe(duration.Seconds())
+}
+
+func recordQuorumError(err string) {
+	if !option.Config.MetricsConfig.KVStoreQuorumErrorsEnabled {
+		return
+	}
+	metrics.KVStoreQuorumErrors.WithLabelValues(err).Inc()
 }

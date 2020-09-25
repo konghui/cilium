@@ -1,4 +1,4 @@
-// Copyright 2017-2018 Authors of Cilium
+// Copyright 2017-2019 Authors of Cilium
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -25,21 +25,28 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
-var (
-	Subsystem = "endpoint"
-	log       = logging.DefaultLogger.WithField(logfields.LogSubsys, Subsystem)
+var log = logging.DefaultLogger.WithField(logfields.LogSubsys, subsystem)
+
+const (
+	subsystem = "endpoint"
+
+	fieldRegenLevel = "regeneration-level"
 )
 
-// getLogger returns a logrus object with EndpointID, ContainerID and the Endpoint
+// getLogger returns a logrus object with EndpointID, containerID and the Endpoint
 // revision fields.
 func (e *Endpoint) getLogger() *logrus.Entry {
 	v := atomic.LoadPointer(&e.logger)
 	return (*logrus.Entry)(v)
 }
 
-// Logger returns a logrus object with EndpointID, ContainerID and the Endpoint
+// Logger returns a logrus object with EndpointID, containerID and the Endpoint
 // revision fields. The caller must specify their subsystem.
 func (e *Endpoint) Logger(subsystem string) *logrus.Entry {
+	if e == nil {
+		return log.WithField(logfields.LogSubsys, subsystem)
+	}
+
 	return e.getLogger().WithField(logfields.LogSubsys, subsystem)
 }
 
@@ -60,7 +67,7 @@ func (e *Endpoint) UpdateLogger(fields map[string]interface{}) {
 	// We need to update if
 	// - e.logger is nil (this happens on the first ever call to UpdateLogger via
 	//   Logger above). This clause has to come first to guard the others.
-	// - If any of EndpointID, ContainerID or policyRevision are different on the
+	// - If any of EndpointID, containerID or policyRevision are different on the
 	//   endpoint from the logger.
 	// - The debug option on the endpoint is true, and the logger is not debug,
 	//   or vice versa.
@@ -80,19 +87,25 @@ func (e *Endpoint) UpdateLogger(fields map[string]interface{}) {
 	if e.Options != nil && e.Options.IsEnabled(option.Debug) {
 		baseLogger = logging.InitializeDefaultLogger()
 		baseLogger.SetLevel(logrus.DebugLevel)
+	} else {
+		// Debug mode takes priority; if not in debug, check what log level user
+		// has set and set the endpoint's log to log at that level.
+		if lvl, ok := logging.GetLogLevelFromConfig(); ok {
+			baseLogger.SetLevel(lvl)
+		}
 	}
 
 	// When adding new fields, make sure they are abstracted by a setter
 	// and update the logger when the value is set.
 	l := baseLogger.WithFields(logrus.Fields{
-		logfields.LogSubsys:              Subsystem,
+		logfields.LogSubsys:              subsystem,
 		logfields.EndpointID:             e.ID,
 		logfields.ContainerID:            e.getShortContainerID(),
 		logfields.DatapathPolicyRevision: e.policyRevision,
 		logfields.DesiredPolicyRevision:  e.nextPolicyRevision,
 		logfields.IPv4:                   e.IPv4.String(),
 		logfields.IPv6:                   e.IPv6.String(),
-		logfields.K8sPodName:             e.GetK8sNamespaceAndPodNameLocked(),
+		logfields.K8sPodName:             e.getK8sNamespaceAndPodName(),
 	})
 
 	if e.SecurityIdentity != nil {

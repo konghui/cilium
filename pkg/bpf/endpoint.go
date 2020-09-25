@@ -1,4 +1,4 @@
-// Copyright 2016-2017 Authors of Cilium
+// Copyright 2016-2019 Authors of Cilium
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -15,10 +15,11 @@
 package bpf
 
 import (
+	"fmt"
 	"net"
 	"unsafe"
 
-	"github.com/cilium/cilium/common/types"
+	"github.com/cilium/cilium/pkg/types"
 )
 
 // Must be in sync with ENDPOINT_KEY_* in <bpf/lib/common.h>
@@ -30,11 +31,13 @@ const (
 // EndpointKey represents the key value of the endpoints BPF map
 //
 // Must be in sync with struct endpoint_key in <bpf/lib/common.h>
+// +k8s:deepcopy-gen=true
 type EndpointKey struct {
-	IP     types.IPv6 // represents both IPv6 and IPv4 (in the lowest four bytes)
-	Family uint8
-	Pad1   uint8
-	Pad2   uint16
+	// represents both IPv6 and IPv4 (in the lowest four bytes)
+	IP     types.IPv6 `align:"$union0"`
+	Family uint8      `align:"family"`
+	Key    uint8      `align:"key"`
+	Pad2   uint16     `align:"pad5"`
 }
 
 // GetKeyPtr returns the unsafe pointer to the BPF key
@@ -56,6 +59,7 @@ func NewEndpointKey(ip net.IP) EndpointKey {
 		result.Family = EndpointKeyIPv6
 		copy(result.IP[:], ip)
 	}
+	result.Key = 0
 
 	return result
 }
@@ -74,7 +78,7 @@ func (k EndpointKey) ToIP() net.IP {
 // String provides a string representation of the EndpointKey.
 func (k EndpointKey) String() string {
 	if ip := k.ToIP(); ip != nil {
-		return ip.String()
+		return net.JoinHostPort(ip.String(), fmt.Sprintf("%d", k.Key))
 	}
 	return "nil"
 }

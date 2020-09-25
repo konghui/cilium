@@ -15,14 +15,17 @@
 package fake
 
 import (
+	"context"
 	"io"
 
 	"github.com/cilium/cilium/pkg/datapath"
+	"github.com/cilium/cilium/pkg/datapath/loader/metrics"
 )
 
 type fakeDatapath struct {
 	node           datapath.NodeHandler
 	nodeAddressing datapath.NodeAddressing
+	loader         datapath.Loader
 }
 
 // NewDatapath returns a new fake datapath
@@ -30,6 +33,7 @@ func NewDatapath() datapath.Datapath {
 	return &fakeDatapath{
 		node:           NewNodeHandler(),
 		nodeAddressing: NewNodeAddressing(),
+		loader:         &fakeLoader{},
 	}
 }
 
@@ -54,7 +58,84 @@ func (f *fakeDatapath) WriteNetdevConfig(io.Writer, datapath.DeviceConfiguration
 	return nil
 }
 
+// WriteTemplateConfig pretends to write the endpoint configuration to a writer.
+func (f *fakeDatapath) WriteTemplateConfig(io.Writer, datapath.EndpointConfiguration) error {
+	return nil
+}
+
 // WriteEndpointConfig pretends to write the endpoint configuration to a writer.
 func (f *fakeDatapath) WriteEndpointConfig(io.Writer, datapath.EndpointConfiguration) error {
 	return nil
+}
+
+func (f *fakeDatapath) InstallProxyRules(uint16, bool, string) error {
+	return nil
+}
+
+func (f *fakeDatapath) RemoveProxyRules(uint16, bool, string) error {
+	return nil
+}
+
+func (f *fakeDatapath) SupportsOriginalSourceAddr() bool {
+	return false
+}
+
+func (f *fakeDatapath) RemoveRules(quiet bool) {}
+
+func (f *fakeDatapath) InstallRules(ifName string) error {
+	return nil
+}
+func (f *fakeDatapath) TransientRulesStart(ifName string) error {
+	return nil
+}
+func (f *fakeDatapath) TransientRulesEnd(quiet bool) {
+	return
+}
+
+func (m *fakeDatapath) GetProxyPort(name string) uint16 {
+	return 0
+}
+
+func (f *fakeDatapath) Loader() datapath.Loader {
+	return f.loader
+}
+
+// Loader is an interface to abstract out loading of datapath programs.
+type fakeLoader struct {
+}
+
+func (f *fakeLoader) CompileAndLoad(ctx context.Context, ep datapath.Endpoint, stats *metrics.SpanStat) error {
+	panic("implement me")
+}
+
+func (f *fakeLoader) CompileOrLoad(ctx context.Context, ep datapath.Endpoint, stats *metrics.SpanStat) error {
+	panic("implement me")
+}
+
+func (f *fakeLoader) ReloadDatapath(ctx context.Context, ep datapath.Endpoint, stats *metrics.SpanStat) error {
+	panic("implement me")
+}
+
+func (f *fakeLoader) EndpointHash(cfg datapath.EndpointConfiguration) (string, error) {
+	panic("implement me")
+}
+
+func (f *fakeLoader) DeleteDatapath(ctx context.Context, ifName, direction string) error {
+	panic("implement me")
+}
+
+func (f *fakeLoader) Unload(ep datapath.Endpoint) {
+}
+
+func (f *fakeLoader) CallsMapPath(id uint16) string {
+	return ""
+}
+
+// Reinitialize does nothing.
+func (f *fakeLoader) Reinitialize(ctx context.Context, o datapath.BaseProgramOwner, deviceMTU int, iptMgr datapath.IptablesManager, p datapath.Proxy) error {
+	return nil
+}
+
+func (f *fakeDatapath) SetupIPVLAN(netNS string) (int, int, error) {
+	return 0, 0, nil
 }

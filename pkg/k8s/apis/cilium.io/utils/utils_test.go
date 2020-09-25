@@ -1,4 +1,4 @@
-// Copyright 2018 Authors of Cilium
+// Copyright 2018-2019 Authors of Cilium
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -22,11 +22,11 @@ import (
 
 	"github.com/cilium/cilium/pkg/checker"
 	k8sConst "github.com/cilium/cilium/pkg/k8s/apis/cilium.io"
+	slim_metav1 "github.com/cilium/cilium/pkg/k8s/slim/k8s/apis/meta/v1"
 	"github.com/cilium/cilium/pkg/labels"
 	"github.com/cilium/cilium/pkg/policy/api"
 
 	. "gopkg.in/check.v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 )
 
@@ -66,7 +66,7 @@ func Test_ParseToCiliumRule(t *testing.T) {
 			// added.
 			name: "parse-in-namespace",
 			args: args{
-				namespace: metav1.NamespaceDefault,
+				namespace: slim_metav1.NamespaceDefault,
 				uid:       uuid,
 				rule: &api.Rule{
 					EndpointSelector: api.NewESFromMatchRequirements(
@@ -77,23 +77,24 @@ func Test_ParseToCiliumRule(t *testing.T) {
 					),
 				},
 			},
-			want: &api.Rule{
-				EndpointSelector: api.NewESFromMatchRequirements(
+			want: api.NewRule().WithEndpointSelector(
+				api.NewESFromMatchRequirements(
 					map[string]string{
 						role:      "backend",
 						namespace: "default",
 					},
 					nil,
 				),
-				Labels: labels.LabelArray{
+			).WithLabels(
+				labels.LabelArray{
 					{
-						Key:    "io.cilium.k8s.policy.name",
-						Value:  "parse-in-namespace",
+						Key:    "io.cilium.k8s.policy.derived-from",
+						Value:  "CiliumNetworkPolicy",
 						Source: labels.LabelSourceK8s,
 					},
 					{
-						Key:    "io.cilium.k8s.policy.uid",
-						Value:  string(uuid),
+						Key:    "io.cilium.k8s.policy.name",
+						Value:  "parse-in-namespace",
 						Source: labels.LabelSourceK8s,
 					},
 					{
@@ -102,19 +103,19 @@ func Test_ParseToCiliumRule(t *testing.T) {
 						Source: labels.LabelSourceK8s,
 					},
 					{
-						Key:    "io.cilium.k8s.policy.derived-from",
-						Value:  "CiliumNetworkPolicy",
+						Key:    "io.cilium.k8s.policy.uid",
+						Value:  string(uuid),
 						Source: labels.LabelSourceK8s,
 					},
 				},
-			},
+			),
 		},
 		{
 			// When the rule specifies a namespace, it is overridden
 			// by the namespace where the rule was inserted.
 			name: "parse-in-namespace-with-ns-selector",
 			args: args{
-				namespace: metav1.NamespaceDefault,
+				namespace: slim_metav1.NamespaceDefault,
 				uid:       uuid,
 				rule: &api.Rule{
 					EndpointSelector: api.NewESFromMatchRequirements(
@@ -126,23 +127,24 @@ func Test_ParseToCiliumRule(t *testing.T) {
 					),
 				},
 			},
-			want: &api.Rule{
-				EndpointSelector: api.NewESFromMatchRequirements(
+			want: api.NewRule().WithEndpointSelector(
+				api.NewESFromMatchRequirements(
 					map[string]string{
 						role:      "backend",
 						namespace: "default",
 					},
 					nil,
 				),
-				Labels: labels.LabelArray{
+			).WithLabels(
+				labels.LabelArray{
 					{
-						Key:    "io.cilium.k8s.policy.name",
-						Value:  "parse-in-namespace-with-ns-selector",
+						Key:    "io.cilium.k8s.policy.derived-from",
+						Value:  "CiliumNetworkPolicy",
 						Source: labels.LabelSourceK8s,
 					},
 					{
-						Key:    "io.cilium.k8s.policy.uid",
-						Value:  string(uuid),
+						Key:    "io.cilium.k8s.policy.name",
+						Value:  "parse-in-namespace-with-ns-selector",
 						Source: labels.LabelSourceK8s,
 					},
 					{
@@ -151,19 +153,19 @@ func Test_ParseToCiliumRule(t *testing.T) {
 						Source: labels.LabelSourceK8s,
 					},
 					{
-						Key:    "io.cilium.k8s.policy.derived-from",
-						Value:  "CiliumNetworkPolicy",
+						Key:    "io.cilium.k8s.policy.uid",
+						Value:  string(uuid),
 						Source: labels.LabelSourceK8s,
 					},
 				},
-			},
+			),
 		},
 		{
 			// Don't insert a namespace selection when the rule
 			// is for init policies.
 			name: "parse-init-policy",
 			args: args{
-				namespace: metav1.NamespaceDefault,
+				namespace: slim_metav1.NamespaceDefault,
 				uid:       uuid,
 				rule: &api.Rule{
 					EndpointSelector: api.NewESFromMatchRequirements(
@@ -175,8 +177,8 @@ func Test_ParseToCiliumRule(t *testing.T) {
 					),
 				},
 			},
-			want: &api.Rule{
-				EndpointSelector: api.NewESFromMatchRequirements(
+			want: api.NewRule().WithEndpointSelector(
+				api.NewESFromMatchRequirements(
 					map[string]string{
 						role:       "backend",
 						podInitLbl: "",
@@ -185,15 +187,16 @@ func Test_ParseToCiliumRule(t *testing.T) {
 					},
 					nil,
 				),
-				Labels: labels.LabelArray{
+			).WithLabels(
+				labels.LabelArray{
 					{
-						Key:    "io.cilium.k8s.policy.name",
-						Value:  "parse-init-policy",
+						Key:    "io.cilium.k8s.policy.derived-from",
+						Value:  "CiliumNetworkPolicy",
 						Source: labels.LabelSourceK8s,
 					},
 					{
-						Key:    "io.cilium.k8s.policy.uid",
-						Value:  string(uuid),
+						Key:    "io.cilium.k8s.policy.name",
+						Value:  "parse-init-policy",
 						Source: labels.LabelSourceK8s,
 					},
 					{
@@ -202,17 +205,17 @@ func Test_ParseToCiliumRule(t *testing.T) {
 						Source: labels.LabelSourceK8s,
 					},
 					{
-						Key:    "io.cilium.k8s.policy.derived-from",
-						Value:  "CiliumNetworkPolicy",
+						Key:    "io.cilium.k8s.policy.uid",
+						Value:  string(uuid),
 						Source: labels.LabelSourceK8s,
 					},
 				},
-			},
+			),
 		},
 		{
 			name: "set-any-source-for-namespace",
 			args: args{
-				namespace: metav1.NamespaceDefault,
+				namespace: slim_metav1.NamespaceDefault,
 				uid:       uuid,
 				rule: &api.Rule{
 					EndpointSelector: api.NewESFromMatchRequirements(
@@ -225,7 +228,7 @@ func Test_ParseToCiliumRule(t *testing.T) {
 						{
 							FromEndpoints: []api.EndpointSelector{
 								{
-									LabelSelector: &metav1.LabelSelector{
+									LabelSelector: &slim_metav1.LabelSelector{
 										MatchLabels: map[string]string{
 											podAnyPrefixLbl: "ns-2",
 										},
@@ -236,20 +239,21 @@ func Test_ParseToCiliumRule(t *testing.T) {
 					},
 				},
 			},
-			want: &api.Rule{
-				EndpointSelector: api.NewESFromMatchRequirements(
+			want: api.NewRule().WithEndpointSelector(
+				api.NewESFromMatchRequirements(
 					map[string]string{
 						role:      "backend",
 						namespace: "default",
 					},
 					nil,
 				),
-				Ingress: []api.IngressRule{
+			).WithIngressRules(
+				[]api.IngressRule{
 					{
 						FromEndpoints: []api.EndpointSelector{
 							api.NewESFromK8sLabelSelector(
 								labels.LabelSourceAnyKeyPrefix,
-								&metav1.LabelSelector{
+								&slim_metav1.LabelSelector{
 									MatchLabels: map[string]string{
 										k8sConst.PodNamespaceLabel: "ns-2",
 									},
@@ -257,15 +261,16 @@ func Test_ParseToCiliumRule(t *testing.T) {
 						},
 					},
 				},
-				Labels: labels.LabelArray{
+			).WithLabels(
+				labels.LabelArray{
 					{
-						Key:    "io.cilium.k8s.policy.name",
-						Value:  "set-any-source-for-namespace",
+						Key:    "io.cilium.k8s.policy.derived-from",
+						Value:  "CiliumNetworkPolicy",
 						Source: labels.LabelSourceK8s,
 					},
 					{
-						Key:    "io.cilium.k8s.policy.uid",
-						Value:  string(uuid),
+						Key:    "io.cilium.k8s.policy.name",
+						Value:  "set-any-source-for-namespace",
 						Source: labels.LabelSourceK8s,
 					},
 					{
@@ -274,17 +279,92 @@ func Test_ParseToCiliumRule(t *testing.T) {
 						Source: labels.LabelSourceK8s,
 					},
 					{
-						Key:    "io.cilium.k8s.policy.derived-from",
-						Value:  "CiliumNetworkPolicy",
+						Key:    "io.cilium.k8s.policy.uid",
+						Value:  string(uuid),
 						Source: labels.LabelSourceK8s,
 					},
 				},
+			),
+		},
+		{
+			// For a clusterwide policy the namespace is empty but when a to/fromEndpoint
+			// rule is added that represents a wildcard we add a match expression
+			// to account only for endpoints managed by cilium.
+			name: "wildcard-to-from-endpoints-with-ccnp",
+			args: args{
+				// Empty namespace for Clusterwide policy
+				namespace: "",
+				uid:       uuid,
+				rule: &api.Rule{
+					EndpointSelector: api.NewESFromMatchRequirements(
+						map[string]string{
+							role: "backend",
+						},
+						nil,
+					),
+					Ingress: []api.IngressRule{
+						{
+							FromEndpoints: []api.EndpointSelector{
+								{
+									LabelSelector: &slim_metav1.LabelSelector{},
+								},
+							},
+						},
+					},
+				},
 			},
+			want: api.NewRule().WithEndpointSelector(
+				api.NewESFromMatchRequirements(
+					map[string]string{
+						role: "backend",
+					},
+					nil,
+				),
+			).WithIngressRules(
+				[]api.IngressRule{
+					{
+						FromEndpoints: []api.EndpointSelector{
+							api.NewESFromK8sLabelSelector(
+								labels.LabelSourceK8sKeyPrefix,
+								&slim_metav1.LabelSelector{
+									MatchExpressions: []slim_metav1.LabelSelectorRequirement{
+										{
+											Key:      k8sConst.PodNamespaceLabel,
+											Operator: slim_metav1.LabelSelectorOpExists,
+											Values:   []string{},
+										},
+									},
+								}),
+						},
+					},
+				},
+			).WithLabels(
+				labels.LabelArray{
+					{
+						Key:    "io.cilium.k8s.policy.derived-from",
+						Value:  "CiliumClusterwideNetworkPolicy",
+						Source: labels.LabelSourceK8s,
+					},
+					{
+						Key:    "io.cilium.k8s.policy.name",
+						Value:  "wildcard-to-from-endpoints-with-ccnp",
+						Source: labels.LabelSourceK8s,
+					},
+					{
+						Key:    "io.cilium.k8s.policy.uid",
+						Value:  string(uuid),
+						Source: labels.LabelSourceK8s,
+					},
+				},
+			),
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			got := ParseToCiliumRule(tt.args.namespace, tt.name, tt.args.uid, tt.args.rule)
+
+			// Sanitize to set AggregatedSelectors field.
+			tt.want.Sanitize()
 			args := []interface{}{got, tt.want}
 			names := []string{"obtained", "expected"}
 			if equal, err := checker.DeepEquals.Check(args, names); !equal {
@@ -324,18 +404,8 @@ func (s *CiliumUtilsSuite) TestParseToCiliumLabels(c *C) {
 			},
 			want: labels.LabelArray{
 				{
-					Key:    "io.cilium.k8s.policy.name",
-					Value:  "foo",
-					Source: labels.LabelSourceK8s,
-				},
-				{
-					Key:    "io.cilium.k8s.policy.uid",
-					Value:  string(uuid),
-					Source: labels.LabelSourceK8s,
-				},
-				{
-					Key:    "io.cilium.k8s.policy.namespace",
-					Value:  "bar",
+					Key:    "hello",
+					Value:  "world",
 					Source: labels.LabelSourceK8s,
 				},
 				{
@@ -344,8 +414,18 @@ func (s *CiliumUtilsSuite) TestParseToCiliumLabels(c *C) {
 					Source: labels.LabelSourceK8s,
 				},
 				{
-					Key:    "hello",
-					Value:  "world",
+					Key:    "io.cilium.k8s.policy.name",
+					Value:  "foo",
+					Source: labels.LabelSourceK8s,
+				},
+				{
+					Key:    "io.cilium.k8s.policy.namespace",
+					Value:  "bar",
+					Source: labels.LabelSourceK8s,
+				},
+				{
+					Key:    "io.cilium.k8s.policy.uid",
+					Value:  string(uuid),
 					Source: labels.LabelSourceK8s,
 				},
 			},

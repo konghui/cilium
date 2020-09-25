@@ -22,6 +22,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/cilium/cilium/pkg/identity"
 	. "github.com/cilium/cilium/test/ginkgo-ext"
 	"github.com/cilium/cilium/test/helpers"
 	"github.com/cilium/cilium/test/helpers/constants"
@@ -49,6 +50,7 @@ var _ = Describe("RuntimeChaos", func() {
 		vm.ContainerRm(helpers.Client)
 		vm.ContainerRm(helpers.Server)
 		vm.SampleContainersActions(helpers.Delete, helpers.CiliumDockerNetwork)
+		vm.CloseSSHClient()
 	})
 
 	AfterEach(func() {
@@ -57,6 +59,7 @@ var _ = Describe("RuntimeChaos", func() {
 
 	JustAfterEach(func() {
 		vm.ValidateNoErrorsInLogs(CurrentGinkgoTestDescription().Duration)
+		ExpectDockerContainersMatchCiliumEndpoints(vm)
 	})
 
 	AfterFailed(func() {
@@ -99,14 +102,14 @@ var _ = Describe("RuntimeChaos", func() {
 		ips := vm.Exec(`
 		curl -s --unix-socket /var/run/cilium/cilium.sock \
 		http://localhost/v1beta/healthz/ | jq ".ipam.ipv4|length"`)
-		Expect(originalIps.Output().String()).To(Equal(ips.Output().String()))
+		Expect(originalIps.Stdout()).To(Equal(ips.Stdout()))
 
 		EndpointList := vm.Exec(endpointListCmd)
-		By("original: %s", originalEndpointList.Output().String())
-		By("new: %s", EndpointList.Output().String())
-		Expect(EndpointList.Output().String()).To(Equal(originalEndpointList.Output().String()))
-		Expect(hasher.Sum(EndpointList.Output().Bytes())).To(
-			Equal(hasher.Sum(originalEndpointList.Output().Bytes())))
+		By("original: %s", originalEndpointList.Stdout())
+		By("new: %s", EndpointList.Stdout())
+		Expect(EndpointList.Stdout()).To(Equal(originalEndpointList.Stdout()))
+		Expect(hasher.Sum(EndpointList.GetStdOut().Bytes())).To(
+			Equal(hasher.Sum(originalEndpointList.GetStdOut().Bytes())))
 
 	}, 300)
 
@@ -193,5 +196,76 @@ var _ = Describe("RuntimeChaos", func() {
 		for _, check := range backgroundChecks {
 			check.res.ExpectSuccess("Curl from app2 to httpd1 should work but it failed at %s", check.time)
 		}
+	})
+
+	It("Validate that delete events on KVStore do not release in use identities", func() {
+		// This validates that if a kvstore delete event is send the identity
+		// is not release if it is in use. For more info issue #7240
+
+		prefix := "http://127.0.0.1:8500/v1/kv/cilium/state/identities/v1/id"
+		identities, err := vm.GetEndpointsIdentityIds()
+		Expect(err).To(BeNil(), "Cannot get identities")
+
+		By("Deleting identities from kvstore")
+		for _, identityID := range identities {
+			action := helpers.CurlFail("%s/%s -X DELETE", prefix, identityID)
+			vm.Exec(action).ExpectSuccess("Key %s cannot be deleted correctly", identityID)
+		}
+
+		newidentities, err := vm.GetEndpointsIdentityIds()
+		Expect(err).To(BeNil(), "Cannot get identities after delete keys")
+
+		Expect(newidentities).To(Equal(identities),
+			"Identities are not the same after delete keys from kvstore")
+
+		By("Checking that identities were restored correctly after deletion")
+		for _, identityID := range newidentities {
+			id, err := identity.ParseNumericIdentity(identityID)
+			Expect(err).To(BeNil(), "Cannot parse identity")
+			if id.IsReservedIdentity() {
+				continue
+			}
+			action := helpers.CurlFail("%s/%s", prefix, identityID)
+			vm.Exec(action).ExpectSuccess("Key %s was not restored correctly", identityID)
+		}
+	})
+
+	It("Delete event on KVStore with CIDR identities", func() {
+		// Validate that if when a delete event happens on kvstore the CIDR
+		// identity (local one) is not deleted.  This happens on the past where
+		// other cilium agent executes a deletion of a key that was used by
+		// another cilium agent, that means that on policy regeneration the
+		// identity was not present.
+		jqFilter := `jq -r '.[] | select(.labels|join("") | contains("cidr")) | .id'`
+		prefix := "http://127.0.0.1:8500/v1/kv/cilium/state/identities/v1/id"
+
+		By("Installing CIDR policy")
+		policy := `
+		[{
+			"endpointSelector": {"matchLabels":{"test":""}},
+			"egress":
+			[{
+				"toCIDR": [
+					"10.10.10.10/32"
+				]
+			}]
+		}]
+		`
+		_, err := vm.PolicyRenderAndImport(policy)
+		Expect(err).To(BeNil(), "Unable to import policy: %s", err)
+
+		CIDRIdentities := vm.Exec(fmt.Sprintf(`cilium identity list -o json| %s`, jqFilter))
+		CIDRIdentities.ExpectSuccess("Cannot get cidr identities")
+
+		for _, identityID := range CIDRIdentities.ByLines() {
+			action := helpers.CurlFail("%s/%s -X DELETE", prefix, identityID)
+			vm.Exec(action).ExpectSuccess("Key %s cannot be deleted correctly", identityID)
+		}
+
+		newCIDRIdentities := vm.Exec(fmt.Sprintf(`cilium identity list -o json| %s`, jqFilter))
+		newCIDRIdentities.ExpectSuccess("Cannot get cidr identities")
+
+		Expect(CIDRIdentities.ByLines()).To(Equal(newCIDRIdentities.ByLines()),
+			"Identities are deleted in kvstore delete event")
 	})
 })

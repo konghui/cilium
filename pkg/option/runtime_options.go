@@ -16,6 +16,8 @@ package option
 
 import (
 	"errors"
+
+	datapathOption "github.com/cilium/cilium/pkg/datapath/option"
 )
 
 const (
@@ -27,6 +29,8 @@ const (
 	DebugLB             = "DebugLB"
 	DropNotify          = "DropNotification"
 	TraceNotify         = "TraceNotification"
+	PolicyVerdictNotify = "PolicyVerdictNotification"
+	PolicyAuditMode     = "PolicyAuditMode"
 	MonitorAggregation  = "MonitorAggregationLevel"
 	NAT46               = "NAT46"
 	AlwaysEnforce       = "always"
@@ -78,6 +82,16 @@ var (
 		Description: "Enable trace notifications",
 	}
 
+	specPolicyVerdictNotify = Option{
+		Define:      "POLICY_VERDICT_NOTIFY",
+		Description: "Enable policy verdict notifications",
+	}
+
+	specPolicyAuditMode = Option{
+		Define:      "POLICY_AUDIT_MODE",
+		Description: "Enable audit mode for policies",
+	}
+
 	specMonitorAggregation = Option{
 		Define:      "MONITOR_AGGREGATION",
 		Description: "Set the level of aggregation for monitor events in the datapath",
@@ -91,14 +105,20 @@ var (
 		Description: "Enable automatic NAT46 translation",
 		Requires:    []string{Conntrack},
 		Verify: func(key string, val string) error {
-			if !Config.EnableIPv4 {
-				return ErrNAT46ReqIPv4
+			opt, err := NormalizeBool(val)
+			if err != nil {
+				return err
 			}
-			if !Config.EnableIPv6 {
-				return ErrNAT46ReqIPv6
-			}
-			if Config.DatapathMode == DatapathModeIpvlan {
-				return ErrNAT46ReqVeth
+			if opt == OptionEnabled {
+				if !Config.EnableIPv4 {
+					return ErrNAT46ReqIPv4
+				}
+				if !Config.EnableIPv6 {
+					return ErrNAT46ReqIPv6
+				}
+				if Config.DatapathMode == datapathOption.DatapathModeIpvlan {
+					return ErrNAT46ReqVeth
+				}
 			}
 			return nil
 		},

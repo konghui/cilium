@@ -106,12 +106,14 @@ func (rule *CassandraRule) Matches(data interface{}) bool {
 // CassandraRuleParser parses protobuf L7 rules to enforcement objects
 // May panic
 func CassandraRuleParser(rule *cilium.PortNetworkPolicyRule) []L7NetworkPolicyRule {
-	var rules []L7NetworkPolicyRule
 	l7Rules := rule.GetL7Rules()
 	if l7Rules == nil {
-		return rules
+		return nil
 	}
-	for _, l7Rule := range l7Rules.GetL7Rules() {
+
+	allowRules := l7Rules.GetL7AllowRules()
+	rules := make([]L7NetworkPolicyRule, 0, len(allowRules))
+	for _, l7Rule := range allowRules {
 		var cr CassandraRule
 		for k, v := range l7Rule.Rule {
 			switch k {
@@ -147,7 +149,7 @@ type CassandraParserFactory struct{}
 var cassandraParserFactory *CassandraParserFactory
 
 func init() {
-	log.Info("init(): Registering cassandraParserFactory")
+	log.Debug("init(): Registering cassandraParserFactory")
 	RegisterParserFactory("cassandra", cassandraParserFactory)
 	RegisterL7RuleParser("cassandra", CassandraRuleParser)
 }
@@ -168,7 +170,7 @@ type CassandraParser struct {
 	preparedQueryPathByPreparedID map[string]string // stores query string based on prepared-id,
 }
 
-func (pf *CassandraParserFactory) Create(connection *Connection) Parser {
+func (pf *CassandraParserFactory) Create(connection *Connection) interface{} {
 	log.Debugf("CassandraParserFactory: Create: %v", connection)
 
 	p := CassandraParser{connection: connection}
@@ -271,7 +273,7 @@ func (p *CassandraParser) OnData(reply, endStream bool, dataArray [][]byte) (OpT
 
 		p.connection.Log(access_log_entry_type,
 			&cilium.LogEntry_GenericL7{
-				&cilium.L7LogEntry{
+				GenericL7: &cilium.L7LogEntry{
 					Proto:  "cassandra",
 					Fields: fields,
 				},

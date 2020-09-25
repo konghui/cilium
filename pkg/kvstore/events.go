@@ -15,6 +15,7 @@
 package kvstore
 
 import (
+	"context"
 	"sync"
 )
 
@@ -66,10 +67,6 @@ type EventChan chan KeyValueEvent
 // stopChan is the channel used to indicate stopping of the watcher
 type stopChan chan struct{}
 
-// signalChan is used to signal readiness, the purpose is specific to the
-// individual functions
-type signalChan chan struct{}
-
 // Watcher represents a KVstore watcher
 type Watcher struct {
 	// Events is the channel to which change notifications will be sent to
@@ -91,7 +88,7 @@ func newWatcher(name, prefix string, chanSize int) *Watcher {
 		name:      name,
 		prefix:    prefix,
 		Events:    make(EventChan, chanSize),
-		stopWatch: make(stopChan, 0),
+		stopWatch: make(stopChan),
 	}
 
 	w.stopWait.Add(1)
@@ -113,8 +110,8 @@ func (w *Watcher) String() string {
 //
 // Returns a watcher structure plus a channel that is closed when the initial
 // list operation has been completed
-func ListAndWatch(name, prefix string, chanSize int) *Watcher {
-	return Client().ListAndWatch(name, prefix, chanSize)
+func ListAndWatch(ctx context.Context, name, prefix string, chanSize int) *Watcher {
+	return Client().ListAndWatch(ctx, name, prefix, chanSize)
 }
 
 // Stop stops a watcher previously created and started with Watch()

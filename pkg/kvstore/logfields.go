@@ -22,6 +22,9 @@ import (
 var log = logging.DefaultLogger.WithField(logfields.LogSubsys, "kvstore")
 
 const (
+	// fieldKVStoreModule is the name of the kvstore backend (etcd or consul)
+	fieldKVStoreModule = "module"
+
 	// name of watcher
 	fieldWatcher = "watcher"
 
@@ -48,12 +51,6 @@ const (
 
 	// fieldAttachLease is true if the key must be attached to a lease
 	fieldAttachLease = "attachLease"
-
-	// fieldLease is a lease identifier
-	fieldLease = "lease"
-
-	// fieldTTL is the TTL of a lease
-	fieldTTL = "ttl"
 
 	// fieldEtcdEndpoint is the etcd endpoint we talk to
 	fieldEtcdEndpoint = "etcdEndpoint"

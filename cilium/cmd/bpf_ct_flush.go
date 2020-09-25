@@ -17,8 +17,9 @@ package cmd
 import (
 	"fmt"
 	"os"
+	"strconv"
 
-	"github.com/cilium/cilium/common"
+	"github.com/cilium/cilium/pkg/common"
 	"github.com/cilium/cilium/pkg/maps/ctmap"
 
 	"github.com/spf13/cobra"
@@ -40,11 +41,11 @@ func init() {
 }
 
 type dummyEndpoint struct {
-	ID string
+	ID int
 }
 
-func (d dummyEndpoint) StringID() string {
-	return d.ID
+func (d dummyEndpoint) GetID() uint64 {
+	return uint64(d.ID)
 }
 
 func flushCt(eID string) {
@@ -52,7 +53,8 @@ func flushCt(eID string) {
 	if eID == "global" {
 		maps = ctmap.GlobalMaps(true, true)
 	} else {
-		maps = ctmap.LocalMaps(&dummyEndpoint{ID: eID}, true, true)
+		id, _ := strconv.Atoi(eID)
+		maps = ctmap.LocalMaps(&dummyEndpoint{ID: id}, true, true)
 	}
 	for _, m := range maps {
 		path, err := m.Path()
@@ -60,12 +62,15 @@ func flushCt(eID string) {
 			err = m.Open()
 		}
 		if err != nil {
-			if err == os.ErrNotExist {
-				Fatalf("Unable to open %s: %s: please try using \"cilium bpf ct flush global\"", path, err)
-			} else {
-				Fatalf("Unable to open %s: %s", path, err)
+			if os.IsNotExist(err) {
+				msg := "Unable to open %s: %s."
+				if eID != "global" {
+					msg = "Unable to open %s: %s: please try using \"cilium bpf ct flush global\"."
+				}
+				fmt.Fprintf(os.Stderr, msg+" Skipping.\n", path, err)
+				continue
 			}
-			continue
+			Fatalf("Unable to open %s: %s", path, err)
 		}
 		defer m.Close()
 		entries := m.Flush()

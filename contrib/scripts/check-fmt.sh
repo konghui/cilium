@@ -1,13 +1,15 @@
-#!/usr/bin/env sh
+#!/usr/bin/env bash
 
 set -e
+set -o pipefail
+
 diff="$(find . ! \( -path './contrib' -prune \) \
         ! \( -path './vendor' -prune \) \
+        ! \( -path './_build' -prune \) \
         ! \( -path './.git' -prune \) \
         ! \( -path '*.validate.go' -prune \) \
-        ! -samefile ./daemon/bindata.go \
-        -type f -name '*.go' -print0 \
-                | xargs -0 gofmt -d -l -s )"
+        -type f -name '*.go' | grep -Ev "(pkg/k8s/apis/cilium.io/v2/client/bindata.go)" | \
+        xargs gofmt -d -l -s )"
 
 if [ -n "$diff" ]; then
 	echo "Unformatted Go source code:"

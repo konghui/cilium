@@ -14,14 +14,13 @@
 
 package datapath
 
-import (
-	"io"
-)
-
 // Datapath is the interface to abstract all datapath interactions. The
 // abstraction allows to implement the datapath requirements with multiple
 // implementations
 type Datapath interface {
+	ConfigWriter
+	IptablesManager
+
 	// Node must return the handler for node events
 	Node() NodeHandler
 
@@ -29,17 +28,12 @@ type Datapath interface {
 	// of the local node
 	LocalNodeAddressing() NodeAddressing
 
-	// WriteNodeConfig writes the implementation-specific configuration of
-	// node-wide options into the specified writer.
-	WriteNodeConfig(io.Writer, *LocalNodeConfiguration) error
+	// Loader must return the implementation of the loader, which is responsible
+	// for loading, reloading, and compiling datapath programs.
+	Loader() Loader
 
-	// WriteNetdevConfig writes the implementation-specific configuration
-	// of configurable options to the specified writer. Options specified
-	// here will apply to base programs and not to endpoints, though
-	// endpoints may have equivalent configurable options.
-	WriteNetdevConfig(io.Writer, DeviceConfiguration) error
-
-	// WriteEndpointConfig writes the implementation-specific configuration
-	// of configurable options to the specified writer.
-	WriteEndpointConfig(io.Writer, EndpointConfiguration) error
+	// SetupIPVLAN sets up IPVLAN in the specified network namespace. Returns
+	// the file descriptor for the tail call map / ID, and an error if any
+	// operation while configuring said namespace fails.
+	SetupIPVLAN(netNS string) (int, int, error)
 }

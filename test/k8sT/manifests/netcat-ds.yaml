@@ -1,10 +1,13 @@
 ---
-apiVersion: extensions/v1beta1
+apiVersion: apps/v1
 kind: DaemonSet
 metadata:
   name: netcatds
   namespace: default
 spec:
+  selector:
+    matchLabels:
+      zgroup: netcatds
   template:
     metadata:
       labels:
@@ -29,10 +32,10 @@ spec:
 ---
 apiVersion: "cilium.io/v2"
 kind: CiliumNetworkPolicy
-description: "L7 policy for incoming http "
 metadata:
   name: "netcat-ds"
 spec:
+  description: "L7 policy for incoming http "
   endpointSelector:
     matchLabels:
       zgroup: netcatds

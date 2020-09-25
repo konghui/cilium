@@ -14,6 +14,10 @@
 
 package linux_defaults
 
+import (
+	"time"
+)
+
 // Linux specific constants used in Linux datapath
 const (
 	// RouteTableIPSec is the default table ID to use for IPSec routing rules
@@ -30,15 +34,47 @@ const (
 	// RouteMarkMask is the mask required for the route mark value
 	RouteMarkMask = 0xF00
 
+	// MarkMultinodeNodeport is used for AWS ENI to mark traffic from
+	// another node, so that it gets routed back through the relevant
+	// interface.
+	MarkMultinodeNodeport = 0x80
+
+	// MaskMultinodeNodeport is the mask associated with the
+	// RouterMarkNodePort
+	MaskMultinodeNodeport = 0x80
+
 	// IPSecProtocolID IP protocol ID for IPSec defined in RFC4303
 	RouteProtocolIPSec = 50
+
+	// RulePriorityIngress is the priority of the rule used for ingress routing
+	// of endpoints. This priority is after encryption and proxy rules, and
+	// before the local table priority.
+	RulePriorityIngress = 20
+
+	// RulePriorityEgress is the priority of the rule used for egress routing
+	// of endpoints. This priority is after the local table priority.
+	RulePriorityEgress = 110
+
+	// RulePriorityNodeport is the priority of the rule used with AWS ENI to
+	// make sure that lookups for multi-node NodePort traffic are NOT done
+	// from the table for the VPC to which the endpoint's CIDR is
+	// associated, but from the main routing table instead.
+	// This priority is before the egress priority.
+	RulePriorityNodeport = RulePriorityEgress - 1
 
 	// TunnelDeviceName the default name of the tunnel device when using vxlan
 	TunnelDeviceName = "cilium_vxlan"
 
-	// IPSec SPI value for endpoint rules
-	IPSecEndpointSPI = 1
+	// IPSec offset value for node rules
+	IPsecMaxKeyVersion = 16
 
-	// IPSec SPI value for node rules
-	IPSecNodeSPI = 2
+	// IPsecMarkMask is the mask required for the IPsec SPI and encrypt/decrypt bits
+	IPsecMarkMask = 0xFF00
+
+	// IPsecMarkMaskIn is the mask required for IPsec to lookup encrypt/decrypt bits
+	IPsecMarkMaskIn = 0x0F00
+
+	// IPsecKeyDeleteDelay is the time to wait before removing old keys when
+	// the IPsec key is changing.
+	IPsecKeyDeleteDelay = 5 * time.Minute
 )

@@ -38,11 +38,15 @@ specs:
           - method: GET
             path: "/reviews/[0-9]*"
 ---
-apiVersion: extensions/v1beta1
+apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: reviews-v2
 spec:
+  selector:
+    matchLabels:
+      app: reviews
+      version: v2
   replicas: 1
   template:
     metadata:
@@ -54,7 +58,7 @@ spec:
     spec:
       containers:
       - name: reviews
-        image: docker.io/istio/examples-bookinfo-reviews-v2:0.2.8
+        image: docker.io/istio/examples-bookinfo-reviews-v2:1.10.1
         imagePullPolicy: IfNotPresent
         ports:
         - containerPort: 9080

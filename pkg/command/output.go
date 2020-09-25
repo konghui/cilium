@@ -1,4 +1,4 @@
-// Copyright 2016-2018 Authors of Cilium
+// Copyright 2016-2020 Authors of Cilium
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -40,6 +40,11 @@ func AddJSONOutput(cmd *cobra.Command) {
 	cmd.Flags().StringVarP(&outputOpt, "output", "o", "", "json| jsonpath='{}'")
 }
 
+//ForceJSON sets output mode to JSON (for unit tests)
+func ForceJSON() {
+	outputOpt = "json"
+}
+
 //PrintOutput receives an interface and dump the data using the --output flag.
 //ATM only json or jsonpath. In the future yaml
 func PrintOutput(data interface{}) error {
@@ -57,7 +62,7 @@ func PrintOutputWithType(data interface{}, outputType string) error {
 		return dumpJSON(data, re.ReplaceAllString(outputType, "$1"))
 	}
 
-	return fmt.Errorf("Couldn't found output printer")
+	return fmt.Errorf("couldn't found output printer")
 }
 
 // DumpJSONToSlice dumps the contents of data into a byte slice. If jsonpath

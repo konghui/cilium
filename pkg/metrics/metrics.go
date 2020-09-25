@@ -23,29 +23,17 @@ package metrics
 
 import (
 	"net/http"
-	"syscall"
 
 	"github.com/cilium/cilium/api/v1/models"
+	"github.com/cilium/cilium/pkg/version"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	dto "github.com/prometheus/client_model/go"
+	"golang.org/x/sys/unix"
 )
 
 const (
-	// BuildStateWaiting is the value of LabelBuildState to describe
-	// the number of entries waiting in the build queue
-	BuildStateWaiting = "waiting"
-
-	// BuildStateBlocked is the value of LabelBuildState to describe
-	// the number of entries scheduled for building but blocked due to
-	// build conditions
-	BuildStateBlocked = "blocked"
-
-	// BuildStateRunning is the value of LabelBuildState to describe
-	// the number of builds currently running
-	BuildStateRunning = "running"
-
 	// ErrorTimeout is the value used to notify timeout errors.
 	ErrorTimeout = "timeout"
 
@@ -54,24 +42,44 @@ const (
 
 	//L7DNS is the value used to report DNS label on metrics
 	L7DNS = "dns"
-)
 
-var (
-	registry = prometheus.NewPedanticRegistry()
+	// SubsystemBPF is the subsystem to scope metrics related to the bpf syscalls.
+	SubsystemBPF = "bpf"
+
+	// SubsystemDatapath is the subsystem to scope metrics related to management of
+	// the datapath. It is prepended to metric names and separated with a '_'.
+	SubsystemDatapath = "datapath"
+
+	// SubsystemAgent is the subsystem to scope metrics related to the cilium agent itself.
+	SubsystemAgent = "agent"
+
+	// SubsystemK8s is the subsystem to scope metrics related to Kubernetes
+	SubsystemK8s = "k8s"
+
+	// SubsystemK8sClient is the subsystem to scope metrics related to the kubernetes client.
+	SubsystemK8sClient = "k8s_client"
+
+	// SubsystemKVStore is the subsystem to scope metrics related to the kvstore.
+	SubsystemKVStore = "kvstore"
+
+	// SubsystemNodes is the subsystem to scope metrics related to the node manager.
+	SubsystemNodes = "nodes"
+
+	// SubsystemTriggers is the subsystem to scope metrics related to the trigger package.
+	SubsystemTriggers = "triggers"
 
 	// Namespace is used to scope metrics from cilium. It is prepended to metric
 	// names and separated with a '_'
 	Namespace = "cilium"
 
-	// Datapath is the subsystem to scope metrics related to management of
-	// the datapath. It is prepended to metric names and separated with a '_'.
-	Datapath = "datapath"
-
-	// Agent is the subsystem to cope metrics related to the cilium agent itself.
-	Agent = "agent"
+	// LabelError indicates the type of error (string)
+	LabelError = "error"
 
 	// LabelOutcome indicates whether the outcome of the operation was successful or not
 	LabelOutcome = "outcome"
+
+	// LabelAttempts is the number of attempts it took to complete the operation
+	LabelAttempts = "attempts"
 
 	// Labels
 
@@ -86,6 +94,9 @@ var (
 
 	// LabelEventSourceK8s marks event-related metrics that come from k8s
 	LabelEventSourceK8s = "k8s"
+
+	// LabelEventSourceFQDN marks event-related metrics that come from pkg/fqdn
+	LabelEventSourceFQDN = "fqdn"
 
 	// LabelEventSourceContainerd marks event-related metrics that come from docker
 	LabelEventSourceContainerd = "docker"
@@ -103,11 +114,20 @@ var (
 	// LabelProtocol marks the L4 protocol (TCP, ANY) for the metric.
 	LabelProtocol = "protocol"
 
+	// LabelSignalType marks the signal name
+	LabelSignalType = "signal"
+
+	// LabelSignalData marks the signal data
+	LabelSignalData = "data"
+
 	// LabelStatus the label from completed task
 	LabelStatus = "status"
 
-	//LabelPolicyEnforcement is the label used to see the enforcement status
+	// LabelPolicyEnforcement is the label used to see the enforcement status
 	LabelPolicyEnforcement = "enforcement"
+
+	// LabelPolicySource is the label used to see the enforcement status
+	LabelPolicySource = "source"
 
 	// LabelScope is the label used to defined multiples scopes in the same
 	// metric. For example, one counter may measure a metric over the scope of
@@ -136,133 +156,110 @@ var (
 
 	// LabelPath is the label for the API path
 	LabelPath = "path"
-
 	// LabelMethod is the label for the HTTP method
 	LabelMethod = "method"
 
 	// LabelAPIReturnCode is the HTTP code returned for that API path
 	LabelAPIReturnCode = "return_code"
 
-	// API interactions
+	// LabelOperation is the label for BPF maps operations
+	LabelOperation = "operation"
+
+	// TODO(sayboras): Remove deprecated metric in 1.10
+	// LabelMapNameDeprecated is the label for the BPF map name
+	// Deprecated: in favor of LabelMapName
+	LabelMapNameDeprecated = "mapName"
+
+	// LabelMapName is the label for the BPF map name
+	LabelMapName = "map_name"
+
+	// LabelVersion is the label for the version number
+	LabelVersion = "version"
+)
+
+var (
+	registry = prometheus.NewPedanticRegistry()
 
 	// APIInteractions is the total time taken to process an API call made
 	// to the cilium-agent
-	APIInteractions = prometheus.NewHistogramVec(prometheus.HistogramOpts{
-		Namespace: Namespace,
-		Subsystem: Agent,
-		Name:      "api_process_time_seconds",
-		Help:      "Duration of processed API calls labeled by path, method and return code.",
-	}, []string{LabelPath, LabelMethod, LabelAPIReturnCode})
+	APIInteractions = NoOpObserverVec
 
 	// Endpoint
 
+	// Endpoint is a function used to collect this metric.
+	// It must be thread-safe.
+	Endpoint prometheus.GaugeFunc
+
+	// TODO(sayboras): Remove deprecated metric in 1.10
 	// EndpointCount is a function used to collect this metric.
 	// It must be thread-safe.
+	// Deprecated: in favor of Endpoint
 	EndpointCount prometheus.GaugeFunc
 
-	// EndpointCountRegenerating is the number of endpoints currently regenerating
-	EndpointCountRegenerating = prometheus.NewGauge(prometheus.GaugeOpts{
-		Namespace: Namespace,
-		Name:      "endpoint_regenerating",
-		Help:      "Number of endpoints currently regenerating. Deprecated. Use endpoint_state with proper labels instead",
-	})
-
+	// TODO(sayboras): Remove deprecated metric in 1.10
 	// EndpointRegenerationCount is a count of the number of times any endpoint
 	// has been regenerated and success/fail outcome
-	EndpointRegenerationCount = prometheus.NewCounterVec(prometheus.CounterOpts{
-		Namespace: Namespace,
-		Name:      "endpoint_regenerations",
-		Help:      "Count of all endpoint regenerations that have completed, tagged by outcome",
-	},
-		[]string{"outcome"})
+	// Deprecated: in favor of EndpointRegenerationTotal
+	EndpointRegenerationCount = NoOpCounterVec
 
-	// Deprecated: this metric will be removed in Cilium 1.4
-	// EndpointRegenerationTime is the total time taken to regenerate endpoint
-	EndpointRegenerationTime = prometheus.NewCounter(prometheus.CounterOpts{
-		Namespace: Namespace,
-		Name:      "endpoint_regeneration_seconds_total",
-		Help:      "Total sum of successful endpoint regeneration times (Deprecated)",
-	})
-
-	// Deprecated: this metric will be removed in Cilium 1.4
-	// EndpointRegenerationTimeSquare is the sum of squares of total time taken
-	// to regenerate endpoint.
-	EndpointRegenerationTimeSquare = prometheus.NewCounter(prometheus.CounterOpts{
-		Namespace: Namespace,
-		Name:      "endpoint_regeneration_square_seconds_total",
-		Help:      "Total sum of squares of successful endpoint regeneration times (Deprecated)",
-	})
+	// EndpointRegenerationTotal is a count of the number of times any endpoint
+	// has been regenerated and success/fail outcome
+	EndpointRegenerationTotal = NoOpCounterVec
 
 	// EndpointStateCount is the total count of the endpoints in various states.
-	EndpointStateCount = prometheus.NewGaugeVec(
-		prometheus.GaugeOpts{
-			Namespace: Namespace,
-			Name:      "endpoint_state",
-			Help:      "Count of all endpoints, tagged by different endpoint states",
-		},
-		[]string{"endpoint_state"},
-	)
+	EndpointStateCount = NoOpGaugeVec
 
 	// EndpointRegenerationTimeStats is the total time taken to regenerate
 	// endpoints, labeled by span name and status ("success" or "failure")
-	EndpointRegenerationTimeStats = prometheus.NewHistogramVec(prometheus.HistogramOpts{
-		Namespace: Namespace,
-		Name:      "endpoint_regeneration_time_stats_seconds",
-		Help:      "Endpoint regeneration time stats labeled by the scope",
-	}, []string{LabelScope, LabelStatus})
+	EndpointRegenerationTimeStats = NoOpObserverVec
 
 	// Policy
 
+	// Policy is the number of policies loaded into the agent
+	Policy = NoOpGauge
+
+	// TODO(sayboras): Remove deprecated metric in 1.10
 	// PolicyCount is the number of policies loaded into the agent
-	PolicyCount = prometheus.NewGauge(prometheus.GaugeOpts{
-		Namespace: Namespace,
-		Name:      "policy_count",
-		Help:      "Number of policies currently loaded",
-	})
+	// Deprecated: in favor of Policy
+	PolicyCount = NoOpGauge
 
 	// PolicyRegenerationCount is the total number of successful policy
 	// regenerations.
-	PolicyRegenerationCount = prometheus.NewCounter(prometheus.CounterOpts{
-		Namespace: Namespace,
-		Name:      "policy_regeneration_total",
-		Help:      "Total number of successful policy regenerations",
-	})
+	PolicyRegenerationCount = NoOpCounter
 
-	// PolicyRegenerationTime is the total time taken to generate policies
-	PolicyRegenerationTime = prometheus.NewCounter(prometheus.CounterOpts{
-		Namespace: Namespace,
-		Name:      "policy_regeneration_seconds_total",
-		Help:      "Total sum of successful policy regeneration times",
-	})
-
-	// PolicyRegenerationTimeSquare is the sum of squares of total time taken
-	// to generate policies
-	PolicyRegenerationTimeSquare = prometheus.NewCounter(prometheus.CounterOpts{
-		Namespace: Namespace,
-		Name:      "policy_regeneration_square_seconds_total",
-		Help:      "Total sum of squares of successful policy regeneration times",
-	})
+	// PolicyRegenerationTimeStats is the total time taken to generate policies
+	PolicyRegenerationTimeStats = NoOpObserverVec
 
 	// PolicyRevision is the current policy revision number for this agent
-	PolicyRevision = prometheus.NewGauge(prometheus.GaugeOpts{
-		Namespace: Namespace,
-		Name:      "policy_max_revision",
-		Help:      "Highest policy revision number in the agent",
-	})
+	PolicyRevision = NoOpGauge
 
+	// TODO(sayboras): Remove deprecated metric in 1.10
 	// PolicyImportErrors is a count of failed policy imports
-	PolicyImportErrors = prometheus.NewCounter(prometheus.CounterOpts{
-		Namespace: Namespace,
-		Name:      "policy_import_errors",
-		Help:      "Number of times a policy import has failed",
-	})
+	// Deprecated: in favor of PolicyImportErrorsTotal
+	PolicyImportErrors = NoOpCounter
+
+	// PolicyImportErrorsTotal is a count of failed policy imports
+	PolicyImportErrorsTotal = NoOpCounter
 
 	// PolicyEndpointStatus is the number of endpoints with policy labeled by enforcement type
-	PolicyEndpointStatus = prometheus.NewGaugeVec(prometheus.GaugeOpts{
-		Namespace: Namespace,
-		Name:      "policy_endpoint_enforcement_status",
-		Help:      "Number of endpoints labeled by policy enforcement status",
-	}, []string{LabelPolicyEnforcement})
+	PolicyEndpointStatus = NoOpGaugeVec
+
+	// PolicyImplementationDelay is a distribution of times taken from adding a
+	// policy (and incrementing the policy revision) to seeing it in the datapath
+	// per Endpoint. This reflects the actual delay perceived by traffic flowing
+	// through the datapath. The longest times will roughly correlate with the
+	// time taken to fully deploy an endpoint.
+	PolicyImplementationDelay = NoOpObserverVec
+
+	// Identity
+
+	// Identity is the number of identities currently in use on the node
+	Identity = NoOpGauge
+
+	// TODO(sayboras): Remove deprecated metric in 1.10
+	// IdentityCount is the number of identities currently in use on the node
+	// Deprecated: in favor of Identity
+	IdentityCount = NoOpGauge
 
 	// Events
 
@@ -271,325 +268,939 @@ var (
 	// source is one of k8s, docker or apia
 
 	// EventTSK8s is the timestamp of k8s events
-	EventTSK8s = prometheus.NewGauge(prometheus.GaugeOpts{
-		Namespace:   Namespace,
-		Name:        "event_ts",
-		Help:        "Last timestamp when we received an event",
-		ConstLabels: prometheus.Labels{"source": LabelEventSourceK8s},
-	})
+	EventTSK8s = NoOpGauge
 
 	// EventTSContainerd is the timestamp of docker events
-	EventTSContainerd = prometheus.NewGauge(prometheus.GaugeOpts{
-		Namespace:   Namespace,
-		Name:        "event_ts",
-		Help:        "Last timestamp when we received an event",
-		ConstLabels: prometheus.Labels{"source": LabelEventSourceContainerd},
-	})
+	EventTSContainerd = NoOpGauge
 
 	// EventTSAPI is the timestamp of docker events
-	EventTSAPI = prometheus.NewGauge(prometheus.GaugeOpts{
-		Namespace:   Namespace,
-		Name:        "event_ts",
-		Help:        "Last timestamp when we received an event",
-		ConstLabels: prometheus.Labels{"source": LabelEventSourceAPI},
-	})
+	EventTSAPI = NoOpGauge
 
 	// L7 statistics
 
-	// ProxyRedirects is the number of redirects labelled by protocol
-	ProxyRedirects = prometheus.NewGaugeVec(prometheus.GaugeOpts{
-		Namespace: Namespace,
-		Name:      "proxy_redirects",
-		Help:      "Number of redirects installed for endpoints, labeled by protocol",
-	}, []string{LabelProtocolL7})
+	// ProxyRedirects is the number of redirects labeled by protocol
+	ProxyRedirects = NoOpGaugeVec
+
+	// ProxyPolicyL7Total is a count of all l7 requests handled by proxy
+	ProxyPolicyL7Total = NoOpCounterVec
 
 	// ProxyParseErrors is a count of failed parse errors on proxy
-	ProxyParseErrors = prometheus.NewCounter(prometheus.CounterOpts{
-		Namespace: Namespace,
-		Name:      "policy_l7_parse_errors_total",
-		Help:      "Number of total L7 parse errors",
-	})
+	// Deprecated: in favor of ProxyPolicyL7Total
+	ProxyParseErrors = NoOpCounter
 
 	// ProxyForwarded is a count of all forwarded requests by proxy
-	ProxyForwarded = prometheus.NewCounter(prometheus.CounterOpts{
-		Namespace: Namespace,
-		Name:      "policy_l7_forwarded_total",
-		Help:      "Number of total L7 forwarded requests/responses",
-	})
+	// Deprecated: in favor of ProxyPolicyL7Total
+	ProxyForwarded = NoOpCounter
 
 	// ProxyDenied is a count of all denied requests by policy by the proxy
-	ProxyDenied = prometheus.NewCounter(prometheus.CounterOpts{
-		Namespace: Namespace,
-		Name:      "policy_l7_denied_total",
-		Help:      "Number of total L7 denied requests/responses due to policy",
-	})
+	// Deprecated: in favor of ProxyPolicyL7Total
+	ProxyDenied = NoOpCounter
 
 	// ProxyReceived is a count of all received requests by the proxy
-	ProxyReceived = prometheus.NewCounter(prometheus.CounterOpts{
-		Namespace: Namespace,
-		Name:      "policy_l7_received_total",
-		Help:      "Number of total L7 received requests/responses",
-	})
+	// Deprecated: in favor of ProxyPolicyL7Total
+	ProxyReceived = NoOpCounter
 
 	// ProxyUpstreamTime is how long the upstream server took to reply labeled
 	// by error, protocol and span time
-	ProxyUpstreamTime = prometheus.NewHistogramVec(prometheus.HistogramOpts{
-		Namespace: Namespace,
-		Name:      "proxy_upstream_reply_seconds",
-		Help:      "Seconds waited to get a reply from a upstream server",
-	}, []string{"error", LabelProtocolL7, LabelScope})
+	ProxyUpstreamTime = NoOpObserverVec
 
 	// L3-L4 statistics
 
 	// DropCount is the total drop requests,
 	// tagged by drop reason and direction(ingress/egress)
-	DropCount = prometheus.NewCounterVec(prometheus.CounterOpts{
-		Namespace: Namespace,
-		Name:      "drop_count_total",
-		Help:      "Total dropped packets, tagged by drop reason and ingress/egress direction",
-	},
-		[]string{"reason", "direction"})
+	DropCount = NoOpCounterVec
 
 	// DropBytes is the total dropped bytes,
 	// tagged by drop reason and direction(ingress/egress)
-	DropBytes = prometheus.NewCounterVec(prometheus.CounterOpts{
-		Namespace: Namespace,
-		Name:      "drop_bytes_total",
-		Help:      "Total dropped bytes, tagged by drop reason and ingress/egress direction",
-	},
-		[]string{"reason", "direction"})
+	DropBytes = NoOpCounterVec
 
 	// ForwardCount is the total forwarded packets,
 	// tagged by ingress/egress direction
-	ForwardCount = prometheus.NewCounterVec(prometheus.CounterOpts{
-		Namespace: Namespace,
-		Name:      "forward_count_total",
-		Help:      "Total forwarded packets, tagged by ingress/egress direction",
-	},
-		[]string{"direction"})
+	ForwardCount = NoOpCounterVec
 
 	// ForwardBytes is the total forwarded bytes,
 	// tagged by ingress/egress direction
-	ForwardBytes = prometheus.NewCounterVec(prometheus.CounterOpts{
-		Namespace: Namespace,
-		Name:      "forward_bytes_total",
-		Help:      "Total forwarded bytes, tagged by ingress/egress direction",
-	},
-		[]string{"direction"})
+	ForwardBytes = NoOpCounterVec
 
 	// Datapath statistics
 
 	// DatapathErrors is the number of errors managing datapath components
 	// such as BPF maps.
-	DatapathErrors = prometheus.NewCounterVec(prometheus.CounterOpts{
-		Namespace: Namespace,
-		Subsystem: Datapath,
-		Name:      "errors_total",
-		Help:      "Number of errors that occurred in the datapath or datapath management",
-	}, []string{LabelDatapathArea, LabelDatapathName, LabelDatapathFamily})
+	DatapathErrors = NoOpCounterVec
 
 	// ConntrackGCRuns is the number of times that the conntrack GC
 	// process was run.
-	ConntrackGCRuns = prometheus.NewCounterVec(prometheus.CounterOpts{
-		Namespace: Namespace,
-		Subsystem: Datapath,
-		Name:      "conntrack_gc_runs_total",
-		Help: "Number of times that the conntrack garbage collector process was run " +
-			"labeled by completion status",
-	}, []string{LabelDatapathFamily, LabelProtocol, LabelStatus})
+	ConntrackGCRuns = NoOpCounterVec
 
 	// ConntrackGCKeyFallbacks number of times that the conntrack key fallback was invalid.
-	ConntrackGCKeyFallbacks = prometheus.NewCounterVec(prometheus.CounterOpts{
-		Namespace: Namespace,
-		Subsystem: Datapath,
-		Name:      "conntrack_gc_key_fallbacks_total",
-		Help:      "Number of times a key fallback was needed when iterating over the BPF map",
-	}, []string{LabelDatapathFamily, LabelProtocol})
+	ConntrackGCKeyFallbacks = NoOpCounterVec
 
 	// ConntrackGCSize the number of entries in the conntrack table
-	ConntrackGCSize = prometheus.NewGaugeVec(prometheus.GaugeOpts{
-		Namespace: Namespace,
-		Subsystem: Datapath,
-		Name:      "conntrack_gc_entries",
-		Help: "The number of alive and deleted conntrack entries at the end " +
-			"of a garbage collector run labeled by datapath family.",
-	}, []string{LabelDatapathFamily, LabelProtocol, LabelStatus})
+	ConntrackGCSize = NoOpGaugeVec
 
 	// ConntrackGCDuration the duration of the conntrack GC process in milliseconds.
-	ConntrackGCDuration = prometheus.NewHistogramVec(prometheus.HistogramOpts{
-		Namespace: Namespace,
-		Subsystem: Datapath,
-		Name:      "conntrack_gc_duration_seconds",
-		Help: "Duration in seconds of the garbage collector process " +
-			"labeled by datapath family and completion status",
-	}, []string{LabelDatapathFamily, LabelProtocol, LabelStatus})
+	ConntrackGCDuration = NoOpObserverVec
+
+	// Signals
+
+	// SignalsHandled is the number of signals received.
+	SignalsHandled = NoOpCounterVec
 
 	// Services
 
 	// ServicesCount number of services
-	ServicesCount = prometheus.NewCounterVec(prometheus.CounterOpts{
-		Namespace: Namespace,
-		Name:      "services_events_total",
-		Help:      "Number of services events labeled by action type",
-	}, []string{LabelAction})
+	ServicesCount = NoOpCounterVec
 
 	// Errors and warnings
 
 	// ErrorsWarnings is the number of errors and warnings in cilium-agent instances
-	ErrorsWarnings = prometheus.NewCounterVec(prometheus.CounterOpts{
-		Namespace: Namespace,
-		Name:      "errors_warnings_total",
-		Help:      "Number of total errors in cilium-agent instances",
-	}, []string{"level", "subsystem"})
+	ErrorsWarnings = NoOpCounterVec
 
 	// ControllerRuns is the number of times that a controller process runs.
-	ControllerRuns = prometheus.NewCounterVec(prometheus.CounterOpts{
-		Namespace: Namespace,
-		Name:      "controllers_runs_total",
-		Help:      "Number of times that a controller process was run labeled by completion status",
-	}, []string{LabelStatus})
+	ControllerRuns = NoOpCounterVec
 
 	// ControllerRunsDuration the duration of the controller process in seconds
-	ControllerRunsDuration = prometheus.NewHistogramVec(prometheus.HistogramOpts{
-		Namespace: Namespace,
-		Name:      "controllers_runs_duration_seconds",
-		Help:      "Duration in seconds of the controller process labeled by completion status",
-	}, []string{LabelStatus})
-
-	// BuildQueueEntries is the number of queued, waiting and running
-	// builds in the build queue
-	BuildQueueEntries = prometheus.NewGaugeVec(prometheus.GaugeOpts{
-		Namespace: Namespace,
-		Name:      "buildqueue_entries",
-		Help:      "The number of queued, waiting and running builds in the build queue",
-	}, []string{LabelBuildState, LabelBuildQueueName})
+	ControllerRunsDuration = NoOpObserverVec
 
 	// subprocess, labeled by Subsystem
-	SubprocessStart = prometheus.NewCounterVec(prometheus.CounterOpts{
-		Namespace: Namespace,
-		Name:      "subprocess_start_total",
-		Help:      "Number of times that Cilium has started a subprocess, labeled by subsystem",
-	}, []string{LabelSubsystem})
+	SubprocessStart = NoOpCounterVec
 
 	// Kubernetes Events
 
-	// KubernetesEvent is the number of Kubernetes events received labeled by
-	// scope, action and execution result
-	KubernetesEvent = prometheus.NewCounterVec(prometheus.CounterOpts{
-		Namespace: Namespace,
-		Name:      "kubernetes_events_total",
-		Help:      "Number of Kubernetes events received labeled by scope, action and execution result",
-	}, []string{LabelScope, LabelAction, LabelStatus})
+	// KubernetesEventProcessed is the number of Kubernetes events
+	// processed labeled by scope, action and execution result
+	KubernetesEventProcessed = NoOpCounterVec
+
+	// KubernetesEventReceived is the number of Kubernetes events received
+	// labeled by scope, action, valid data and equalness.
+	KubernetesEventReceived = NoOpCounterVec
+
+	// Kubernetes interactions
+
+	// KubernetesAPIInteractions is the total time taken to process an API call made
+	// to the kube-apiserver
+	KubernetesAPIInteractions = NoOpObserverVec
+
+	// TODO(sayboras): Remove deprecated metric in 1.10
+	// KubernetesAPICalls is the counter for all API calls made to
+	// kube-apiserver.
+	// Deprecated: Use KubernetesAPICallsTotal instead
+	KubernetesAPICalls = NoOpCounterVec
+
+	// KubernetesAPICallsTotal is the counter for all API calls made to
+	// kube-apiserver.
+	KubernetesAPICallsTotal = NoOpCounterVec
+
+	// KubernetesCNPStatusCompletion is the number of seconds it takes to
+	// complete a CNP status update
+	KubernetesCNPStatusCompletion = NoOpObserverVec
 
 	// IPAM events
 
 	// IpamEvent is the number of IPAM events received labeled by action and
 	// datapath family type
-	IpamEvent = prometheus.NewCounterVec(prometheus.CounterOpts{
-		Namespace: Namespace,
-		Name:      "ipam_events_total",
-		Help:      "Number of IPAM events received labeled by action and datapath family type",
-	}, []string{LabelAction, LabelDatapathFamily})
+	IpamEvent = NoOpCounterVec
 
 	// KVstore events
 
-	// KVStoreOperationsTotal is the  number of interactions with the Key-Value
-	// Store, labeled by subsystem, kind of action and action
-	//
-	// Deprecated: This metric can be removed in 1.6 as
-	// KVStoreOperationsDuration provides the count along with duration
-	KVStoreOperationsTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
-		Name: "kvstore_operations_total",
-		Help: "Number of interactions with the Key-Value Store, labeled by subsystem, kind of action and action",
-	}, []string{LabelScope, LabelKind, LabelAction, LabelOutcome})
-
 	// KVStoreOperationsDuration records the duration of kvstore operations
-	KVStoreOperationsDuration = prometheus.NewHistogramVec(prometheus.HistogramOpts{
-		Namespace: Namespace,
-		Subsystem: "kvstore",
-		Name:      "operations_duration_seconds",
-		Help:      "Duration in seconds of kvstore operations",
-	}, []string{LabelScope, LabelKind, LabelAction, LabelOutcome})
+	KVStoreOperationsDuration = NoOpObserverVec
+
+	// KVStoreEventsQueueDuration records the duration in seconds of time
+	// received event was blocked before it could be queued
+	KVStoreEventsQueueDuration = NoOpObserverVec
+
+	// KVStoreQuorumErrors records the number of kvstore quorum errors
+	KVStoreQuorumErrors = NoOpCounterVec
 
 	// FQDNGarbageCollectorCleanedTotal is the number of domains cleaned by the
 	// GC job.
-	FQDNGarbageCollectorCleanedTotal = prometheus.NewCounter(prometheus.CounterOpts{
-		Name: "fqdn_gc_deletions_total",
-		Help: "Number of FQDNs that have been cleaned on FQDN Garbage collector job",
-	})
+	FQDNGarbageCollectorCleanedTotal = NoOpCounter
+
+	// BPFSyscallDuration is the metric for bpf syscalls duration.
+	BPFSyscallDuration = NoOpObserverVec
+
+	// BPFMapOps is the metric to measure the number of operations done to a
+	// bpf map.
+	BPFMapOps = NoOpCounterVec
+
+	// TriggerPolicyUpdateTotal is the metric to count total number of
+	// policy update triggers
+	TriggerPolicyUpdateTotal = NoOpCounterVec
+
+	// TriggerPolicyUpdateFolds is the current level folding that is
+	// happening when running policy update triggers
+	TriggerPolicyUpdateFolds = NoOpGauge
+
+	// TriggerPolicyUpdateCallDuration measures the latency and call
+	// duration of policy update triggers
+	TriggerPolicyUpdateCallDuration = NoOpObserverVec
+
+	// VersionMetric labelled by Cilium version
+	VersionMetric = NoOpGaugeVec
 )
+
+type Configuration struct {
+	APIInteractionsEnabled                  bool
+	EndpointRegenerationCountEnabled        bool
+	EndpointStateCountEnabled               bool
+	EndpointRegenerationTimeStatsEnabled    bool
+	PolicyCountEnabled                      bool
+	PolicyRegenerationCountEnabled          bool
+	PolicyRegenerationTimeStatsEnabled      bool
+	PolicyRevisionEnabled                   bool
+	PolicyImportErrorsEnabled               bool
+	PolicyEndpointStatusEnabled             bool
+	PolicyImplementationDelayEnabled        bool
+	IdentityCountEnabled                    bool
+	EventTSK8sEnabled                       bool
+	EventTSContainerdEnabled                bool
+	EventTSAPIEnabled                       bool
+	ProxyRedirectsEnabled                   bool
+	ProxyPolicyL7Enabled                    bool
+	ProxyParseErrorsEnabled                 bool
+	ProxyForwardedEnabled                   bool
+	ProxyDeniedEnabled                      bool
+	ProxyReceivedEnabled                    bool
+	NoOpObserverVecEnabled                  bool
+	DropCountEnabled                        bool
+	DropBytesEnabled                        bool
+	NoOpCounterVecEnabled                   bool
+	ForwardBytesEnabled                     bool
+	DatapathErrorsEnabled                   bool
+	ConntrackGCRunsEnabled                  bool
+	ConntrackGCKeyFallbacksEnabled          bool
+	ConntrackGCSizeEnabled                  bool
+	ConntrackGCDurationEnabled              bool
+	SignalsHandledEnabled                   bool
+	ServicesCountEnabled                    bool
+	ErrorsWarningsEnabled                   bool
+	ControllerRunsEnabled                   bool
+	ControllerRunsDurationEnabled           bool
+	SubprocessStartEnabled                  bool
+	KubernetesEventProcessedEnabled         bool
+	KubernetesEventReceivedEnabled          bool
+	KubernetesAPIInteractionsEnabled        bool
+	KubernetesAPICallsEnabled               bool
+	KubernetesCNPStatusCompletionEnabled    bool
+	IpamEventEnabled                        bool
+	KVStoreOperationsDurationEnabled        bool
+	KVStoreEventsQueueDurationEnabled       bool
+	KVStoreQuorumErrorsEnabled              bool
+	FQDNGarbageCollectorCleanedTotalEnabled bool
+	BPFSyscallDurationEnabled               bool
+	BPFMapOps                               bool
+	TriggerPolicyUpdateTotal                bool
+	TriggerPolicyUpdateFolds                bool
+	TriggerPolicyUpdateCallDuration         bool
+	VersionMetric                           bool
+}
+
+func DefaultMetrics() map[string]struct{} {
+	return map[string]struct{}{
+		Namespace + "_" + SubsystemAgent + "_api_process_time_seconds":               {},
+		Namespace + "_endpoint_regenerations":                                        {}, //TODO(sayboras): Remove deprecated metric in 1.10
+		Namespace + "_endpoint_regenerations_total":                                  {},
+		Namespace + "_endpoint_state":                                                {},
+		Namespace + "_endpoint_regeneration_time_stats_seconds":                      {},
+		Namespace + "_policy":                                                        {},
+		Namespace + "_policy_count":                                                  {}, //TODO(sayboras): Remove deprecated metric in 1.10
+		Namespace + "_policy_regeneration_total":                                     {},
+		Namespace + "_policy_regeneration_time_stats_seconds":                        {},
+		Namespace + "_policy_max_revision":                                           {},
+		Namespace + "_policy_import_errors":                                          {}, //TODO(sayboras): Remove deprecated metric in 1.10
+		Namespace + "_policy_import_errors_total":                                    {},
+		Namespace + "_policy_endpoint_enforcement_status":                            {},
+		Namespace + "_policy_implementation_delay":                                   {},
+		Namespace + "_identity":                                                      {},
+		Namespace + "_identity_count":                                                {}, //TODO(sayboras): Remove deprecated metric in 1.10
+		Namespace + "_event_ts":                                                      {},
+		Namespace + "_proxy_redirects":                                               {},
+		Namespace + "_policy_l7_total":                                               {},
+		Namespace + "_policy_l7_parse_errors_total":                                  {},
+		Namespace + "_policy_l7_forwarded_total":                                     {},
+		Namespace + "_policy_l7_denied_total":                                        {},
+		Namespace + "_policy_l7_received_total":                                      {},
+		Namespace + "_proxy_upstream_reply_seconds":                                  {},
+		Namespace + "_drop_count_total":                                              {},
+		Namespace + "_drop_bytes_total":                                              {},
+		Namespace + "_forward_count_total":                                           {},
+		Namespace + "_forward_bytes_total":                                           {},
+		Namespace + "_" + SubsystemDatapath + "_errors_total":                        {},
+		Namespace + "_" + SubsystemDatapath + "_conntrack_gc_runs_total":             {},
+		Namespace + "_" + SubsystemDatapath + "_conntrack_gc_key_fallbacks_total":    {},
+		Namespace + "_" + SubsystemDatapath + "_conntrack_gc_entries":                {},
+		Namespace + "_" + SubsystemDatapath + "_conntrack_gc_duration_seconds":       {},
+		Namespace + "_" + SubsystemDatapath + "_signals_handled_total":               {},
+		Namespace + "_services_events_total":                                         {},
+		Namespace + "_errors_warnings_total":                                         {},
+		Namespace + "_controllers_runs_total":                                        {},
+		Namespace + "_controllers_runs_duration_seconds":                             {},
+		Namespace + "_subprocess_start_total":                                        {},
+		Namespace + "_kubernetes_events_total":                                       {},
+		Namespace + "_kubernetes_events_received_total":                              {},
+		Namespace + "_" + SubsystemK8sClient + "_api_latency_time_seconds":           {},
+		Namespace + "_" + SubsystemK8sClient + "_api_calls_counter":                  {}, //TODO(sayboras): Remove deprecated metric in 1.10
+		Namespace + "_" + SubsystemK8sClient + "_api_calls_total":                    {},
+		Namespace + "_" + SubsystemK8s + "_cnp_status_completion_seconds":            {},
+		Namespace + "_ipam_events_total":                                             {},
+		Namespace + "_" + SubsystemKVStore + "_operations_duration_seconds":          {},
+		Namespace + "_" + SubsystemKVStore + "_events_queue_seconds":                 {},
+		Namespace + "_" + SubsystemKVStore + "_quorum_errors_total":                  {},
+		Namespace + "_fqdn_gc_deletions_total":                                       {},
+		Namespace + "_" + SubsystemBPF + "_map_ops_total":                            {},
+		Namespace + "_" + SubsystemTriggers + "_policy_update_total":                 {},
+		Namespace + "_" + SubsystemTriggers + "_policy_update_folds":                 {},
+		Namespace + "_" + SubsystemTriggers + "_policy_update_call_duration_seconds": {},
+		Namespace + "_version":                                                       {},
+	}
+}
+
+// CreateConfiguration returns a Configuration with all metrics that are
+// considered enabled from the given slice of metricsEnabled as well as a slice
+// of prometheus.Collectors that must be registered in the prometheus default
+// register.
+func CreateConfiguration(metricsEnabled []string) (Configuration, []prometheus.Collector) {
+	var collectors []prometheus.Collector
+	c := Configuration{}
+
+	for _, metricName := range metricsEnabled {
+		switch metricName {
+		case Namespace + "_" + SubsystemAgent + "_api_process_time_seconds":
+			APIInteractions = prometheus.NewHistogramVec(prometheus.HistogramOpts{
+				Namespace: Namespace,
+				Subsystem: SubsystemAgent,
+				Name:      "api_process_time_seconds",
+				Help:      "Duration of processed API calls labeled by path, method and return code.",
+			}, []string{LabelPath, LabelMethod, LabelAPIReturnCode})
+
+			collectors = append(collectors, APIInteractions)
+			c.APIInteractionsEnabled = true
+
+		case Namespace + "_endpoint_regenerations":
+			EndpointRegenerationCount = prometheus.NewCounterVec(prometheus.CounterOpts{
+				Namespace: Namespace,
+				Name:      "endpoint_regenerations",
+				Help: "Count of all endpoint regenerations that have completed, tagged by outcome" +
+					"(deprecated, use endpoint_regenerations_total instead)",
+			}, []string{"outcome"})
+
+			collectors = append(collectors, EndpointRegenerationCount)
+			c.EndpointRegenerationCountEnabled = true
+
+		case Namespace + "_endpoint_regenerations_total":
+			EndpointRegenerationTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+				Namespace: Namespace,
+				Name:      "endpoint_regenerations_total",
+				Help:      "Count of all endpoint regenerations that have completed, tagged by outcome",
+			}, []string{"outcome"})
+
+			collectors = append(collectors, EndpointRegenerationTotal)
+			c.EndpointRegenerationCountEnabled = true
+
+		case Namespace + "_endpoint_state":
+			EndpointStateCount = prometheus.NewGaugeVec(
+				prometheus.GaugeOpts{
+					Namespace: Namespace,
+					Name:      "endpoint_state",
+					Help:      "Count of all endpoints, tagged by different endpoint states",
+				},
+				[]string{"endpoint_state"},
+			)
+
+			collectors = append(collectors, EndpointStateCount)
+			c.EndpointStateCountEnabled = true
+
+		case Namespace + "_endpoint_regeneration_time_stats_seconds":
+			EndpointRegenerationTimeStats = prometheus.NewHistogramVec(prometheus.HistogramOpts{
+				Namespace: Namespace,
+				Name:      "endpoint_regeneration_time_stats_seconds",
+				Help:      "Endpoint regeneration time stats labeled by the scope",
+			}, []string{LabelScope, LabelStatus})
+
+			collectors = append(collectors, EndpointRegenerationTimeStats)
+			c.EndpointRegenerationTimeStatsEnabled = true
+
+		case Namespace + "_policy":
+			Policy = prometheus.NewGauge(prometheus.GaugeOpts{
+				Namespace: Namespace,
+				Name:      "policy",
+				Help:      "Number of policies currently loaded",
+			})
+
+			collectors = append(collectors, Policy)
+			c.PolicyCountEnabled = true
+
+		case Namespace + "_policy_count":
+			PolicyCount = prometheus.NewGauge(prometheus.GaugeOpts{
+				Namespace: Namespace,
+				Name:      "policy_count",
+				Help:      "Number of policies currently loaded (deprecated, use policy instead)",
+			})
+
+			collectors = append(collectors, PolicyCount)
+			c.PolicyCountEnabled = true
+
+		case Namespace + "_policy_regeneration_total":
+			PolicyRegenerationCount = prometheus.NewCounter(prometheus.CounterOpts{
+				Namespace: Namespace,
+				Name:      "policy_regeneration_total",
+				Help:      "Total number of successful policy regenerations",
+			})
+
+			collectors = append(collectors, PolicyRegenerationCount)
+			c.PolicyRegenerationCountEnabled = true
+
+		case Namespace + "_policy_regeneration_time_stats_seconds":
+			PolicyRegenerationTimeStats = prometheus.NewHistogramVec(prometheus.HistogramOpts{
+				Namespace: Namespace,
+				Name:      "policy_regeneration_time_stats_seconds",
+				Help:      "Policy regeneration time stats labeled by the scope",
+			}, []string{LabelScope, LabelStatus})
+
+			collectors = append(collectors, PolicyRegenerationTimeStats)
+			c.PolicyRegenerationTimeStatsEnabled = true
+
+		case Namespace + "_policy_max_revision":
+			PolicyRevision = prometheus.NewGauge(prometheus.GaugeOpts{
+				Namespace: Namespace,
+				Name:      "policy_max_revision",
+				Help:      "Highest policy revision number in the agent",
+			})
+
+			collectors = append(collectors, PolicyRevision)
+			c.PolicyRegenerationTimeStatsEnabled = true
+
+		case Namespace + "_policy_import_errors":
+			PolicyImportErrors = prometheus.NewCounter(prometheus.CounterOpts{
+				Namespace: Namespace,
+				Name:      "policy_import_errors",
+				Help: "Number of times a policy import has failed" +
+					"(deprecated, use policy_import_errors_total instead)",
+			})
+
+			collectors = append(collectors, PolicyImportErrors)
+			c.PolicyImportErrorsEnabled = true
+
+		case Namespace + "_policy_import_errors_total":
+			PolicyImportErrorsTotal = prometheus.NewCounter(prometheus.CounterOpts{
+				Namespace: Namespace,
+				Name:      "policy_import_errors_total",
+				Help:      "Number of times a policy import has failed",
+			})
+
+			collectors = append(collectors, PolicyImportErrorsTotal)
+			c.PolicyImportErrorsEnabled = true
+
+		case Namespace + "_policy_endpoint_enforcement_status":
+			PolicyEndpointStatus = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+				Namespace: Namespace,
+				Name:      "policy_endpoint_enforcement_status",
+				Help:      "Number of endpoints labeled by policy enforcement status",
+			}, []string{LabelPolicyEnforcement})
+
+			collectors = append(collectors, PolicyEndpointStatus)
+			c.PolicyEndpointStatusEnabled = true
+
+		case Namespace + "_policy_implementation_delay":
+			PolicyImplementationDelay = prometheus.NewHistogramVec(prometheus.HistogramOpts{
+				Namespace: Namespace,
+				Name:      "policy_implementation_delay",
+				Help:      "Time between a policy change and it being fully deployed into the datapath",
+			}, []string{LabelPolicySource})
+
+			collectors = append(collectors, PolicyImplementationDelay)
+			c.PolicyImplementationDelayEnabled = true
+
+		case Namespace + "_identity":
+			Identity = prometheus.NewGauge(prometheus.GaugeOpts{
+				Namespace: Namespace,
+				Name:      "identity",
+				Help:      "Number of identities currently allocated",
+			})
+
+			collectors = append(collectors, Identity)
+			c.IdentityCountEnabled = true
+
+		case Namespace + "_identity_count":
+			IdentityCount = prometheus.NewGauge(prometheus.GaugeOpts{
+				Namespace: Namespace,
+				Name:      "identity_count",
+				Help:      "Number of identities currently allocated (deprecated, use identity instead)",
+			})
+
+			collectors = append(collectors, IdentityCount)
+			c.IdentityCountEnabled = true
+
+		case Namespace + "_event_ts":
+			EventTSK8s = prometheus.NewGauge(prometheus.GaugeOpts{
+				Namespace:   Namespace,
+				Name:        "event_ts",
+				Help:        "Last timestamp when we received an event",
+				ConstLabels: prometheus.Labels{"source": LabelEventSourceK8s},
+			})
+
+			collectors = append(collectors, EventTSK8s)
+			c.EventTSK8sEnabled = true
+
+			EventTSContainerd = prometheus.NewGauge(prometheus.GaugeOpts{
+				Namespace:   Namespace,
+				Name:        "event_ts",
+				Help:        "Last timestamp when we received an event",
+				ConstLabels: prometheus.Labels{"source": LabelEventSourceContainerd},
+			})
+
+			collectors = append(collectors, EventTSContainerd)
+			c.EventTSContainerdEnabled = true
+
+			EventTSAPI = prometheus.NewGauge(prometheus.GaugeOpts{
+				Namespace:   Namespace,
+				Name:        "event_ts",
+				Help:        "Last timestamp when we received an event",
+				ConstLabels: prometheus.Labels{"source": LabelEventSourceAPI},
+			})
+
+			collectors = append(collectors, EventTSAPI)
+			c.EventTSAPIEnabled = true
+
+		case Namespace + "_proxy_redirects":
+			ProxyRedirects = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+				Namespace: Namespace,
+				Name:      "proxy_redirects",
+				Help:      "Number of redirects installed for endpoints, labeled by protocol",
+			}, []string{LabelProtocolL7})
+
+			collectors = append(collectors, ProxyRedirects)
+			c.ProxyRedirectsEnabled = true
+
+		case Namespace + "_policy_l7_total":
+			ProxyPolicyL7Total = prometheus.NewCounterVec(prometheus.CounterOpts{
+				Namespace: Namespace,
+				Name:      "policy_l7_total",
+				Help:      "Number of total proxy requests handled",
+			}, []string{"rule"})
+
+			collectors = append(collectors, ProxyPolicyL7Total)
+			c.ProxyPolicyL7Enabled = true
+
+		case Namespace + "_policy_l7_parse_errors_total":
+			ProxyParseErrors = prometheus.NewCounter(prometheus.CounterOpts{
+				Namespace: Namespace,
+				Name:      "policy_l7_parse_errors_total",
+				Help:      "Number of total L7 parse errors",
+			})
+
+			collectors = append(collectors, ProxyParseErrors)
+			c.ProxyParseErrorsEnabled = true
+
+		case Namespace + "_policy_l7_forwarded_total":
+			ProxyForwarded = prometheus.NewCounter(prometheus.CounterOpts{
+				Namespace: Namespace,
+				Name:      "policy_l7_forwarded_total",
+				Help:      "Number of total L7 forwarded requests/responses",
+			})
+
+			collectors = append(collectors, ProxyForwarded)
+			c.ProxyForwardedEnabled = true
+
+		case Namespace + "_policy_l7_denied_total":
+			ProxyDenied = prometheus.NewCounter(prometheus.CounterOpts{
+				Namespace: Namespace,
+				Name:      "policy_l7_denied_total",
+				Help:      "Number of total L7 denied requests/responses due to policy",
+			})
+
+			collectors = append(collectors, ProxyDenied)
+			c.ProxyDeniedEnabled = true
+
+		case Namespace + "_policy_l7_received_total":
+			ProxyReceived = prometheus.NewCounter(prometheus.CounterOpts{
+				Namespace: Namespace,
+				Name:      "policy_l7_received_total",
+				Help:      "Number of total L7 received requests/responses",
+			})
+
+			collectors = append(collectors, ProxyReceived)
+			c.ProxyReceivedEnabled = true
+
+		case Namespace + "_proxy_upstream_reply_seconds":
+			ProxyUpstreamTime = prometheus.NewHistogramVec(prometheus.HistogramOpts{
+				Namespace: Namespace,
+				Name:      "proxy_upstream_reply_seconds",
+				Help:      "Seconds waited to get a reply from a upstream server",
+			}, []string{"error", LabelProtocolL7, LabelScope})
+
+			collectors = append(collectors, ProxyUpstreamTime)
+			c.NoOpObserverVecEnabled = true
+
+		case Namespace + "_drop_count_total":
+			DropCount = prometheus.NewCounterVec(prometheus.CounterOpts{
+				Namespace: Namespace,
+				Name:      "drop_count_total",
+				Help:      "Total dropped packets, tagged by drop reason and ingress/egress direction",
+			},
+				[]string{"reason", "direction"})
+
+			collectors = append(collectors, DropCount)
+			c.DropCountEnabled = true
+
+		case Namespace + "_drop_bytes_total":
+			DropBytes = prometheus.NewCounterVec(prometheus.CounterOpts{
+				Namespace: Namespace,
+				Name:      "drop_bytes_total",
+				Help:      "Total dropped bytes, tagged by drop reason and ingress/egress direction",
+			},
+				[]string{"reason", "direction"})
+
+			collectors = append(collectors, DropBytes)
+			c.DropBytesEnabled = true
+
+		case Namespace + "_forward_count_total":
+			ForwardCount = prometheus.NewCounterVec(prometheus.CounterOpts{
+				Namespace: Namespace,
+				Name:      "forward_count_total",
+				Help:      "Total forwarded packets, tagged by ingress/egress direction",
+			},
+				[]string{"direction"})
+
+			collectors = append(collectors, ForwardCount)
+			c.NoOpCounterVecEnabled = true
+
+		case Namespace + "_forward_bytes_total":
+			ForwardBytes = prometheus.NewCounterVec(prometheus.CounterOpts{
+				Namespace: Namespace,
+				Name:      "forward_bytes_total",
+				Help:      "Total forwarded bytes, tagged by ingress/egress direction",
+			},
+				[]string{"direction"})
+
+			collectors = append(collectors, ForwardBytes)
+			c.ForwardBytesEnabled = true
+
+		case Namespace + "_" + SubsystemDatapath + "_errors_total":
+			DatapathErrors = prometheus.NewCounterVec(prometheus.CounterOpts{
+				Namespace: Namespace,
+				Subsystem: SubsystemDatapath,
+				Name:      "errors_total",
+				Help:      "Number of errors that occurred in the datapath or datapath management",
+			}, []string{LabelDatapathArea, LabelDatapathName, LabelDatapathFamily})
+
+			collectors = append(collectors, DatapathErrors)
+			c.DatapathErrorsEnabled = true
+
+		case Namespace + "_" + SubsystemDatapath + "_conntrack_gc_runs_total":
+			ConntrackGCRuns = prometheus.NewCounterVec(prometheus.CounterOpts{
+				Namespace: Namespace,
+				Subsystem: SubsystemDatapath,
+				Name:      "conntrack_gc_runs_total",
+				Help: "Number of times that the conntrack garbage collector process was run " +
+					"labeled by completion status",
+			}, []string{LabelDatapathFamily, LabelProtocol, LabelStatus})
+
+			collectors = append(collectors, ConntrackGCRuns)
+			c.ConntrackGCRunsEnabled = true
+
+		case Namespace + "_" + SubsystemDatapath + "_conntrack_gc_key_fallbacks_total":
+			ConntrackGCKeyFallbacks = prometheus.NewCounterVec(prometheus.CounterOpts{
+				Namespace: Namespace,
+				Subsystem: SubsystemDatapath,
+				Name:      "conntrack_gc_key_fallbacks_total",
+				Help:      "Number of times a key fallback was needed when iterating over the BPF map",
+			}, []string{LabelDatapathFamily, LabelProtocol})
+
+			collectors = append(collectors, ConntrackGCKeyFallbacks)
+			c.ConntrackGCKeyFallbacksEnabled = true
+
+		case Namespace + "_" + SubsystemDatapath + "_conntrack_gc_entries":
+			ConntrackGCSize = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+				Namespace: Namespace,
+				Subsystem: SubsystemDatapath,
+				Name:      "conntrack_gc_entries",
+				Help: "The number of alive and deleted conntrack entries at the end " +
+					"of a garbage collector run labeled by datapath family.",
+			}, []string{LabelDatapathFamily, LabelProtocol, LabelStatus})
+
+			collectors = append(collectors, ConntrackGCSize)
+			c.ConntrackGCSizeEnabled = true
+
+		case Namespace + "_" + SubsystemDatapath + "_conntrack_gc_duration_seconds":
+			ConntrackGCDuration = prometheus.NewHistogramVec(prometheus.HistogramOpts{
+				Namespace: Namespace,
+				Subsystem: SubsystemDatapath,
+				Name:      "conntrack_gc_duration_seconds",
+				Help: "Duration in seconds of the garbage collector process " +
+					"labeled by datapath family and completion status",
+			}, []string{LabelDatapathFamily, LabelProtocol, LabelStatus})
+
+			collectors = append(collectors, ConntrackGCDuration)
+			c.ConntrackGCDurationEnabled = true
+
+		case Namespace + "_" + SubsystemDatapath + "_signals_handled_total":
+			SignalsHandled = prometheus.NewCounterVec(prometheus.CounterOpts{
+				Namespace: Namespace,
+				Subsystem: SubsystemDatapath,
+				Name:      "signals_handled_total",
+				Help: "Number of times that the datapath signal handler process was run " +
+					"labeled by signal type, data and completion status",
+			}, []string{LabelSignalType, LabelSignalData, LabelStatus})
+
+			collectors = append(collectors, SignalsHandled)
+			c.SignalsHandledEnabled = true
+
+		case Namespace + "_services_events_total":
+			ServicesCount = prometheus.NewCounterVec(prometheus.CounterOpts{
+				Namespace: Namespace,
+				Name:      "services_events_total",
+				Help:      "Number of services events labeled by action type",
+			}, []string{LabelAction})
+
+			collectors = append(collectors, ServicesCount)
+			c.ServicesCountEnabled = true
+
+		case Namespace + "_errors_warnings_total":
+			ErrorsWarnings = prometheus.NewCounterVec(prometheus.CounterOpts{
+				Namespace: Namespace,
+				Name:      "errors_warnings_total",
+				Help:      "Number of total errors in cilium-agent instances",
+			}, []string{"level", "subsystem"})
+
+			collectors = append(collectors, ErrorsWarnings)
+			c.ErrorsWarningsEnabled = true
+
+		case Namespace + "_controllers_runs_total":
+			ControllerRuns = prometheus.NewCounterVec(prometheus.CounterOpts{
+				Namespace: Namespace,
+				Name:      "controllers_runs_total",
+				Help:      "Number of times that a controller process was run labeled by completion status",
+			}, []string{LabelStatus})
+
+			collectors = append(collectors, ControllerRuns)
+			c.ControllerRunsEnabled = true
+
+		case Namespace + "_controllers_runs_duration_seconds":
+			ControllerRunsDuration = prometheus.NewHistogramVec(prometheus.HistogramOpts{
+				Namespace: Namespace,
+				Name:      "controllers_runs_duration_seconds",
+				Help:      "Duration in seconds of the controller process labeled by completion status",
+			}, []string{LabelStatus})
+
+			collectors = append(collectors, ControllerRunsDuration)
+			c.ControllerRunsDurationEnabled = true
+
+		case Namespace + "_subprocess_start_total":
+			SubprocessStart = prometheus.NewCounterVec(prometheus.CounterOpts{
+				Namespace: Namespace,
+				Name:      "subprocess_start_total",
+				Help:      "Number of times that Cilium has started a subprocess, labeled by subsystem",
+			}, []string{LabelSubsystem})
+
+			collectors = append(collectors, SubprocessStart)
+			c.SubprocessStartEnabled = true
+
+		case Namespace + "_kubernetes_events_total":
+			KubernetesEventProcessed = prometheus.NewCounterVec(prometheus.CounterOpts{
+				Namespace: Namespace,
+				Name:      "kubernetes_events_total",
+				Help:      "Number of Kubernetes events processed labeled by scope, action and execution result",
+			}, []string{LabelScope, LabelAction, LabelStatus})
+
+			collectors = append(collectors, KubernetesEventProcessed)
+			c.KubernetesEventProcessedEnabled = true
+
+		case Namespace + "_kubernetes_events_received_total":
+			KubernetesEventReceived = prometheus.NewCounterVec(prometheus.CounterOpts{
+				Namespace: Namespace,
+				Name:      "kubernetes_events_received_total",
+				Help:      "Number of Kubernetes events received labeled by scope, action, valid data and equalness",
+			}, []string{LabelScope, LabelAction, "valid", "equal"})
+
+			collectors = append(collectors, KubernetesEventReceived)
+			c.KubernetesEventReceivedEnabled = true
+
+		case Namespace + "_" + SubsystemK8sClient + "_api_latency_time_seconds":
+			KubernetesAPIInteractions = prometheus.NewHistogramVec(prometheus.HistogramOpts{
+				Namespace: Namespace,
+				Subsystem: SubsystemK8sClient,
+				Name:      "api_latency_time_seconds",
+				Help:      "Duration of processed API calls labeled by path and method.",
+			}, []string{LabelPath, LabelMethod})
+
+			collectors = append(collectors, KubernetesAPIInteractions)
+			c.KubernetesAPIInteractionsEnabled = true
+
+		case Namespace + "_" + SubsystemK8sClient + "_api_calls_counter":
+			KubernetesAPICalls = prometheus.NewCounterVec(prometheus.CounterOpts{
+				Namespace: Namespace,
+				Subsystem: SubsystemK8sClient,
+				Name:      "api_calls_counter",
+				Help: "Number of API calls made to kube-apiserver labeled by host, method and return code." +
+					"(deprecated, use api_calls_total instead)",
+			}, []string{"host", LabelMethod, LabelAPIReturnCode})
+
+			collectors = append(collectors, KubernetesAPICalls)
+			c.KubernetesAPICallsEnabled = true
+
+		case Namespace + "_" + SubsystemK8sClient + "_api_calls_total":
+			KubernetesAPICallsTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+				Namespace: Namespace,
+				Subsystem: SubsystemK8sClient,
+				Name:      "api_calls_total",
+				Help:      "Number of API calls made to kube-apiserver labeled by host, method and return code.",
+			}, []string{"host", LabelMethod, LabelAPIReturnCode})
+
+			collectors = append(collectors, KubernetesAPICallsTotal)
+			c.KubernetesAPICallsEnabled = true
+
+		case Namespace + "_" + SubsystemK8s + "_cnp_status_completion_seconds":
+			KubernetesCNPStatusCompletion = prometheus.NewHistogramVec(prometheus.HistogramOpts{
+				Namespace: Namespace,
+				Subsystem: SubsystemK8s,
+				Name:      "cnp_status_completion_seconds",
+				Help:      "Duration in seconds in how long it took to complete a CNP status update",
+			}, []string{LabelAttempts, LabelOutcome})
+
+			collectors = append(collectors, KubernetesCNPStatusCompletion)
+			c.KubernetesCNPStatusCompletionEnabled = true
+
+		case Namespace + "_ipam_events_total":
+			IpamEvent = prometheus.NewCounterVec(prometheus.CounterOpts{
+				Namespace: Namespace,
+				Name:      "ipam_events_total",
+				Help:      "Number of IPAM events received labeled by action and datapath family type",
+			}, []string{LabelAction, LabelDatapathFamily})
+
+			collectors = append(collectors, IpamEvent)
+			c.IpamEventEnabled = true
+
+		case Namespace + "_" + SubsystemKVStore + "_operations_duration_seconds":
+			KVStoreOperationsDuration = prometheus.NewHistogramVec(prometheus.HistogramOpts{
+				Namespace: Namespace,
+				Subsystem: SubsystemKVStore,
+				Name:      "operations_duration_seconds",
+				Help:      "Duration in seconds of kvstore operations",
+			}, []string{LabelScope, LabelKind, LabelAction, LabelOutcome})
+
+			collectors = append(collectors, KVStoreOperationsDuration)
+			c.KVStoreOperationsDurationEnabled = true
+
+		case Namespace + "_" + SubsystemKVStore + "_events_queue_seconds":
+			KVStoreEventsQueueDuration = prometheus.NewHistogramVec(prometheus.HistogramOpts{
+				Namespace: Namespace,
+				Subsystem: SubsystemKVStore,
+				Name:      "events_queue_seconds",
+				Help:      "Duration in seconds of time received event was blocked before it could be queued",
+				Buckets:   []float64{.002, .005, .01, .015, .025, .05, .1, .25, .5, .75, 1},
+			}, []string{LabelScope, LabelAction})
+
+			collectors = append(collectors, KVStoreEventsQueueDuration)
+			c.KVStoreEventsQueueDurationEnabled = true
+
+		case Namespace + "_" + SubsystemKVStore + "_quorum_errors_total":
+			KVStoreQuorumErrors = prometheus.NewCounterVec(prometheus.CounterOpts{
+				Namespace: Namespace,
+				Subsystem: SubsystemKVStore,
+				Name:      "quorum_errors_total",
+				Help:      "Number of quorum errors",
+			}, []string{LabelError})
+
+			collectors = append(collectors, KVStoreQuorumErrors)
+			c.KVStoreQuorumErrorsEnabled = true
+
+		case Namespace + "_fqdn_gc_deletions_total":
+			FQDNGarbageCollectorCleanedTotal = prometheus.NewCounter(prometheus.CounterOpts{
+				Namespace: Namespace,
+				Name:      "fqdn_gc_deletions_total",
+				Help:      "Number of FQDNs that have been cleaned on FQDN Garbage collector job",
+			})
+
+			collectors = append(collectors, FQDNGarbageCollectorCleanedTotal)
+			c.FQDNGarbageCollectorCleanedTotalEnabled = true
+
+		case Namespace + "_" + SubsystemBPF + "_syscall_duration_seconds":
+			BPFSyscallDuration = prometheus.NewHistogramVec(prometheus.HistogramOpts{
+				Namespace: Namespace,
+				Subsystem: SubsystemBPF,
+				Name:      "syscall_duration_seconds",
+				Help:      "Duration of BPF system calls",
+			}, []string{LabelOperation, LabelOutcome})
+
+			collectors = append(collectors, BPFSyscallDuration)
+			c.BPFSyscallDurationEnabled = true
+
+		case Namespace + "_" + SubsystemBPF + "_map_ops_total":
+			BPFMapOps = prometheus.NewCounterVec(prometheus.CounterOpts{
+				Namespace: Namespace,
+				Subsystem: SubsystemBPF,
+				Name:      "map_ops_total",
+				Help:      "Total operations on map, tagged by map name",
+			}, []string{LabelMapName, LabelMapNameDeprecated, LabelOperation, LabelOutcome})
+
+			collectors = append(collectors, BPFMapOps)
+			c.BPFMapOps = true
+
+		case Namespace + "_" + SubsystemTriggers + "_policy_update_total":
+			TriggerPolicyUpdateTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+				Namespace: Namespace,
+				Subsystem: SubsystemTriggers,
+				Name:      "policy_update_total",
+				Help:      "Total number of policy update trigger invocations labeled by reason",
+			}, []string{"reason"})
+
+			collectors = append(collectors, TriggerPolicyUpdateTotal)
+			c.TriggerPolicyUpdateTotal = true
+
+		case Namespace + "_" + SubsystemTriggers + "_policy_update_folds":
+			TriggerPolicyUpdateFolds = prometheus.NewGauge(prometheus.GaugeOpts{
+				Namespace: Namespace,
+				Subsystem: SubsystemTriggers,
+				Name:      "policy_update_folds",
+				Help:      "Current number of folds",
+			})
+
+			collectors = append(collectors, TriggerPolicyUpdateFolds)
+			c.TriggerPolicyUpdateFolds = true
+
+		case Namespace + "_" + SubsystemTriggers + "_policy_update_call_duration_seconds":
+			TriggerPolicyUpdateCallDuration = prometheus.NewHistogramVec(prometheus.HistogramOpts{
+				Namespace: Namespace,
+				Subsystem: SubsystemTriggers,
+				Name:      "policy_update_call_duration_seconds",
+				Help:      "Duration of policy update trigger",
+			}, []string{"type"})
+
+			collectors = append(collectors, TriggerPolicyUpdateCallDuration)
+			c.TriggerPolicyUpdateCallDuration = true
+
+		case Namespace + "_version":
+			VersionMetric = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+				Namespace: Namespace,
+				Name:      "version",
+				Help:      "Cilium version",
+			}, []string{LabelVersion})
+
+			VersionMetric.WithLabelValues(version.GetCiliumVersion().Version)
+
+			collectors = append(collectors, VersionMetric)
+			c.VersionMetric = true
+		}
+	}
+
+	return c, collectors
+}
 
 func init() {
 	MustRegister(prometheus.NewProcessCollector(prometheus.ProcessCollectorOpts{Namespace: Namespace}))
 	// TODO: Figure out how to put this into a Namespace
-	//MustRegister(prometheus.NewGoCollector())
-	MustRegister(APIInteractions)
-
-	MustRegister(EndpointCountRegenerating)
-	MustRegister(EndpointRegenerationCount)
-	MustRegister(EndpointRegenerationTime)
-	MustRegister(EndpointRegenerationTimeSquare)
-	MustRegister(EndpointStateCount)
-	MustRegister(EndpointRegenerationTimeStats)
-
-	MustRegister(PolicyCount)
-	MustRegister(PolicyRegenerationCount)
-	MustRegister(PolicyRegenerationTime)
-	MustRegister(PolicyRegenerationTimeSquare)
-	MustRegister(PolicyRevision)
-	MustRegister(PolicyImportErrors)
-	MustRegister(PolicyEndpointStatus)
-
-	MustRegister(EventTSK8s)
-	MustRegister(EventTSContainerd)
-	MustRegister(EventTSAPI)
-
-	MustRegister(ProxyRedirects)
-	MustRegister(ProxyParseErrors)
-	MustRegister(ProxyForwarded)
-	MustRegister(ProxyDenied)
-	MustRegister(ProxyReceived)
-	MustRegister(ProxyUpstreamTime)
-
-	MustRegister(DropCount)
-	MustRegister(DropBytes)
-	MustRegister(ForwardCount)
-	MustRegister(ForwardBytes)
-
+	// MustRegister(prometheus.NewGoCollector())
 	MustRegister(newStatusCollector())
-
-	MustRegister(DatapathErrors)
-	MustRegister(ConntrackGCRuns)
-	MustRegister(ConntrackGCKeyFallbacks)
-	MustRegister(ConntrackGCSize)
-	MustRegister(ConntrackGCDuration)
-
-	MustRegister(ServicesCount)
-
-	MustRegister(ErrorsWarnings)
-
-	MustRegister(ControllerRuns)
-	MustRegister(ControllerRunsDuration)
-
-	MustRegister(BuildQueueEntries)
-
-	MustRegister(SubprocessStart)
-
-	MustRegister(KubernetesEvent)
-
-	MustRegister(IpamEvent)
-
-	MustRegister(KVStoreOperationsTotal)
-	MustRegister(KVStoreOperationsDuration)
-
-	MustRegister(FQDNGarbageCollectorCleanedTotal)
+	MustRegister(newbpfCollector())
 }
 
 // MustRegister adds the collector to the registry, exposing this metric to
 // prometheus scrapes.
 // It will panic on error.
-func MustRegister(c prometheus.Collector) {
-	registry.MustRegister(c)
+func MustRegister(c ...prometheus.Collector) {
+	registry.MustRegister(c...)
 }
 
 // Register registers a collector
@@ -629,8 +1240,13 @@ func Enable(addr string) <-chan error {
 	go func() {
 		// The Handler function provides a default handler to expose metrics
 		// via an HTTP server. "/metrics" is the usual endpoint for that.
-		http.Handle("/metrics", promhttp.HandlerFor(registry, promhttp.HandlerOpts{}))
-		errs <- http.ListenAndServe(addr, nil)
+		mux := http.NewServeMux()
+		mux.Handle("/metrics", promhttp.HandlerFor(registry, promhttp.HandlerOpts{}))
+		srv := http.Server{
+			Addr:    addr,
+			Handler: mux,
+		}
+		errs <- srv.ListenAndServe()
 	}()
 
 	return errs
@@ -643,6 +1259,17 @@ func GetCounterValue(m prometheus.Counter) float64 {
 	err := m.Write(&pm)
 	if err == nil {
 		return *pm.Counter.Value
+	}
+	return 0
+}
+
+// GetGaugeValue returns the current value stored for the gauge. This function
+// is useful in tests.
+func GetGaugeValue(m prometheus.Gauge) float64 {
+	var pm dto.Metric
+	err := m.Write(&pm)
+	if err == nil {
+		return *pm.Gauge.Value
 	}
 	return 0
 }
@@ -703,8 +1330,8 @@ func Error2Outcome(err error) string {
 	return LabelValueOutcomeSuccess
 }
 
-// Errno2Outcome converts a syscall.Errno to LabelOutcome
-func Errno2Outcome(errno syscall.Errno) string {
+// Errno2Outcome converts a unix.Errno to LabelOutcome
+func Errno2Outcome(errno unix.Errno) string {
 	if errno != 0 {
 		return LabelValueOutcomeFail
 	}

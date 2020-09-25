@@ -15,8 +15,11 @@
 package kvstore
 
 import (
+	"context"
 	"fmt"
 	"sync"
+
+	"github.com/cilium/cilium/pkg/logging/logfields"
 )
 
 var (
@@ -33,7 +36,7 @@ func setOpts(opts map[string]string, supportedOpts backendOptions) error {
 		opt, ok := supportedOpts[key]
 		if !ok {
 			errors++
-			log.Errorf("unknown kvstore configuration key %q", key)
+			log.WithField(logfields.Key, key).Error("unknown kvstore configuration key")
 			continue
 		}
 
@@ -79,7 +82,7 @@ var (
 	setupOnce sync.Once
 )
 
-func setup(selectedBackend string, opts map[string]string) error {
+func setup(ctx context.Context, selectedBackend string, opts map[string]string, goOpts *ExtraOptions) error {
 	module := getBackend(selectedBackend)
 	if module == nil {
 		return fmt.Errorf("unknown key-value store type %q. See cilium.link/err-kvstore for details", selectedBackend)
@@ -89,18 +92,22 @@ func setup(selectedBackend string, opts map[string]string) error {
 		return err
 	}
 
+	if err := module.setExtraConfig(goOpts); err != nil {
+		return err
+	}
+
 	selectedModule = module.getName()
 
-	return initClient(module)
+	return initClient(ctx, module, goOpts)
 }
 
 // Setup sets up the key-value store specified in kvStore and configures it
 // with the options provided in opts
-func Setup(selectedBackend string, opts map[string]string) error {
+func Setup(ctx context.Context, selectedBackend string, opts map[string]string, goOpts *ExtraOptions) error {
 	var err error
 
 	setupOnce.Do(func() {
-		err = setup(selectedBackend, opts)
+		err = setup(ctx, selectedBackend, opts, goOpts)
 	})
 
 	return err

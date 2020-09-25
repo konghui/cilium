@@ -1,4 +1,4 @@
-// Copyright 2016-2017 Authors of Cilium
+// Copyright 2016-2020 Authors of Cilium
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -19,11 +19,14 @@ package v2
 import (
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"testing"
 
+	eniTypes "github.com/cilium/cilium/pkg/aws/eni/types"
 	"github.com/cilium/cilium/pkg/checker"
 	k8sConst "github.com/cilium/cilium/pkg/k8s/apis/cilium.io"
 	k8sUtils "github.com/cilium/cilium/pkg/k8s/apis/cilium.io/utils"
+	slim_metav1 "github.com/cilium/cilium/pkg/k8s/slim/k8s/apis/meta/v1"
 	"github.com/cilium/cilium/pkg/labels"
 	"github.com/cilium/cilium/pkg/policy/api"
 
@@ -113,8 +116,8 @@ var (
 		Labels: labels.LabelArray{{Key: "uuid", Value: "98678-9868976-78687678887678", Source: ""}},
 	}
 	uuidRule         = types.UID("98678-9868976-78687678887678")
-	expectedSpecRule = api.Rule{
-		Ingress: []api.IngressRule{
+	expectedSpecRule = api.NewRule().
+				WithIngressRules([]api.IngressRule{
 			{
 				FromEndpoints: []api.EndpointSelector{
 					api.NewESFromLabels(
@@ -132,8 +135,8 @@ var (
 					},
 				},
 			},
-		},
-		Egress: []api.EgressRule{
+		}).
+		WithEgressRules([]api.EgressRule{
 			{
 				ToPorts: []api.PortRule{
 					{
@@ -147,9 +150,8 @@ var (
 			}, {
 				ToCIDRSet: []api.CIDRRule{{Cidr: api.CIDR("10.0.0.0/8"), ExceptCIDRs: []api.CIDR{"10.96.0.0/12"}}},
 			},
-		},
-		Labels: k8sUtils.GetPolicyLabels("default", "rule1", uuidRule, "CiliumNetworkPolicy"),
-	}
+		}).
+		WithLabels(k8sUtils.GetPolicyLabels("default", "rule1", uuidRule, "CiliumNetworkPolicy"))
 
 	rawRule = []byte(`{
         "endpointSelector": {
@@ -245,6 +247,7 @@ var (
 
 	ciliumRule = append(append([]byte(`{
     "metadata": {
+		"namespace": "default",
         "name": "rule1",
 		"uid": "`+uuidRule+`"
     },
@@ -252,6 +255,7 @@ var (
 }`)...)
 	ciliumRuleList = append(append(append(append([]byte(`{
     "metadata": {
+		"namespace": "default",
         "name": "rule1",
 		"uid": "`+uuidRule+`"
     },
@@ -264,7 +268,7 @@ func (s *CiliumV2Suite) TestParseSpec(c *C) {
 		map[string]string{
 			fmt.Sprintf("%s.role", labels.LabelSourceAny): "backend",
 		},
-		[]metav1.LabelSelectorRequirement{{
+		[]slim_metav1.LabelSelectorRequirement{{
 			Key:      fmt.Sprintf("%s.role", labels.LabelSourceAny),
 			Operator: "NotIn",
 			Values:   []string{"production"},
@@ -275,8 +279,9 @@ func (s *CiliumV2Suite) TestParseSpec(c *C) {
 
 	expectedPolicyRule := &CiliumNetworkPolicy{
 		ObjectMeta: metav1.ObjectMeta{
-			Name: "rule1",
-			UID:  uuidRule,
+			Namespace: "default",
+			Name:      "rule1",
+			UID:       uuidRule,
 		},
 		Spec: &apiRule,
 	}
@@ -285,8 +290,9 @@ func (s *CiliumV2Suite) TestParseSpec(c *C) {
 
 	expectedPolicyRuleWithLabel := &CiliumNetworkPolicy{
 		ObjectMeta: metav1.ObjectMeta{
-			Name: "rule1",
-			UID:  uuidRule,
+			Namespace: "default",
+			Name:      "rule1",
+			UID:       uuidRule,
 		},
 		Spec: &apiRuleWithLabels,
 	}
@@ -296,7 +302,7 @@ func (s *CiliumV2Suite) TestParseSpec(c *C) {
 			fmt.Sprintf("%s.role", labels.LabelSourceAny):                           "backend",
 			fmt.Sprintf("%s.%s", labels.LabelSourceK8s, k8sConst.PodNamespaceLabel): "default",
 		},
-		[]metav1.LabelSelectorRequirement{{
+		[]slim_metav1.LabelSelectorRequirement{{
 			Key:      fmt.Sprintf("%s.role", labels.LabelSourceAny),
 			Operator: "NotIn",
 			Values:   []string{"production"},
@@ -304,16 +310,20 @@ func (s *CiliumV2Suite) TestParseSpec(c *C) {
 	)
 	expectedSpecRule.EndpointSelector = expectedES
 
+	// Sanitize rule to populate aggregated selectors.
+	expectedSpecRule.Sanitize()
+
 	rules, err := expectedPolicyRule.Parse()
 	c.Assert(err, IsNil)
 	c.Assert(len(rules), Equals, 1)
-	c.Assert(*rules[0], checker.DeepEquals, expectedSpecRule)
+	c.Assert(*rules[0], checker.DeepEquals, *expectedSpecRule)
 
 	b, err := json.Marshal(expectedPolicyRule)
 	c.Assert(err, IsNil)
 	var expectedPolicyRuleUnmarshalled CiliumNetworkPolicy
 	err = json.Unmarshal(b, &expectedPolicyRuleUnmarshalled)
 	c.Assert(err, IsNil)
+	expectedPolicyRuleUnmarshalled.Parse()
 	c.Assert(expectedPolicyRuleUnmarshalled, checker.DeepEquals, *expectedPolicyRule)
 
 	cnpl := CiliumNetworkPolicy{}
@@ -327,7 +337,7 @@ func (s *CiliumV2Suite) TestParseRules(c *C) {
 		map[string]string{
 			fmt.Sprintf("%s.role", labels.LabelSourceAny): "backend",
 		},
-		[]metav1.LabelSelectorRequirement{{
+		[]slim_metav1.LabelSelectorRequirement{{
 			Key:      fmt.Sprintf("%s.role", labels.LabelSourceAny),
 			Operator: "NotIn",
 			Values:   []string{"production"},
@@ -338,8 +348,9 @@ func (s *CiliumV2Suite) TestParseRules(c *C) {
 
 	expectedPolicyRuleList := &CiliumNetworkPolicy{
 		ObjectMeta: metav1.ObjectMeta{
-			Name: "rule1",
-			UID:  uuidRule,
+			Namespace: "default",
+			Name:      "rule1",
+			UID:       uuidRule,
 		},
 		Specs: api.Rules{&apiRule, &apiRule},
 	}
@@ -348,8 +359,9 @@ func (s *CiliumV2Suite) TestParseRules(c *C) {
 
 	expectedPolicyRuleListWithLabel := &CiliumNetworkPolicy{
 		ObjectMeta: metav1.ObjectMeta{
-			Name: "rule1",
-			UID:  uuidRule,
+			Namespace: "default",
+			Name:      "rule1",
+			UID:       uuidRule,
 		},
 		Specs: api.Rules{&apiRuleWithLabels, &apiRuleWithLabels},
 	}
@@ -359,14 +371,18 @@ func (s *CiliumV2Suite) TestParseRules(c *C) {
 			fmt.Sprintf("%s.role", labels.LabelSourceAny):                           "backend",
 			fmt.Sprintf("%s.%s", labels.LabelSourceK8s, k8sConst.PodNamespaceLabel): "default",
 		},
-		[]metav1.LabelSelectorRequirement{{
+		[]slim_metav1.LabelSelectorRequirement{{
 			Key:      fmt.Sprintf("%s.role", labels.LabelSourceAny),
 			Operator: "NotIn",
 			Values:   []string{"production"},
 		}},
 	)
 	expectedSpecRule.EndpointSelector = expectedES
-	expectedSpecRules := api.Rules{&expectedSpecRule, &expectedSpecRule}
+	expectedSpecRules := api.Rules{expectedSpecRule, expectedSpecRule}
+	expectedSpecRule.Sanitize()
+	for i := range expectedSpecRules {
+		expectedSpecRules[i].Sanitize()
+	}
 
 	rules, err := expectedPolicyRuleList.Parse()
 	c.Assert(err, IsNil)
@@ -380,10 +396,215 @@ func (s *CiliumV2Suite) TestParseRules(c *C) {
 	var expectedPolicyRuleUnmarshalled CiliumNetworkPolicy
 	err = json.Unmarshal(b, &expectedPolicyRuleUnmarshalled)
 	c.Assert(err, IsNil)
+	expectedPolicyRuleUnmarshalled.Parse()
 	c.Assert(expectedPolicyRuleUnmarshalled, checker.DeepEquals, *expectedPolicyRuleList)
 
 	cnpl := CiliumNetworkPolicy{}
 	err = json.Unmarshal(ciliumRuleList, &cnpl)
 	c.Assert(err, IsNil)
 	c.Assert(cnpl, checker.DeepEquals, *expectedPolicyRuleListWithLabel)
+}
+
+func (s *CiliumV2Suite) TestParseWithNodeSelector(c *C) {
+	// A rule without any L7 rules so that we can validate both CNP and CCNP.
+	// CCNP doesn't support L7 rules just yet.
+	rule := api.Rule{
+		EndpointSelector: api.NewESFromLabels(),
+		Ingress: []api.IngressRule{
+			{
+				FromEndpoints: []api.EndpointSelector{
+					api.NewESFromLabels(
+						labels.ParseSelectLabel("role=frontend"),
+					),
+					api.NewESFromLabels(
+						labels.ParseSelectLabel("reserved:world"),
+					),
+				},
+				ToPorts: []api.PortRule{
+					{
+						Ports: []api.PortProtocol{{Port: "80", Protocol: "TCP"}},
+					},
+				},
+			},
+		},
+		Egress: []api.EgressRule{
+			{
+				ToPorts: []api.PortRule{
+					{
+						Ports: []api.PortProtocol{{Port: "80", Protocol: "TCP"}},
+					},
+				},
+			}, {
+				ToCIDR: []api.CIDR{"10.0.0.1"},
+			}, {
+				ToCIDRSet: []api.CIDRRule{{Cidr: api.CIDR("10.0.0.0/8"), ExceptCIDRs: []api.CIDR{"10.96.0.0/12"}}},
+			},
+		},
+	}
+
+	emptySelector := api.EndpointSelector{LabelSelector: nil}
+	prevEPSelector := rule.EndpointSelector
+
+	// A NodeSelector is an EndpointSelector. We can reuse the previous value
+	// that was set as an EndpointSelector.
+	rule.EndpointSelector = emptySelector
+	rule.NodeSelector = prevEPSelector
+
+	// Expect CNP parse error because it's not allowed to have a NodeSelector.
+	cnpl := CiliumNetworkPolicy{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: "default",
+			Name:      "rule",
+			UID:       uuidRule,
+		},
+		Spec: &rule,
+	}
+	_, err := cnpl.Parse()
+	c.Assert(err, ErrorMatches,
+		"Invalid CiliumNetworkPolicy spec: rule cannot have NodeSelector")
+
+	// CCNP parse is allowed to have a NodeSelector.
+	ccnpl := CiliumClusterwideNetworkPolicy{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: "",
+			Name:      "rule",
+			UID:       uuidRule,
+		},
+		CiliumNetworkPolicy: &cnpl,
+	}
+	_, err = ccnpl.Parse()
+	c.Assert(err, IsNil)
+
+	// CCNPs are received as CNP and initially parsed as CNP. Create a CNP with
+	// an empty namespace to test this case. See #12834 for details.
+	ccnplAsCNP := CiliumNetworkPolicy{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: "",
+			Name:      "rule",
+			UID:       uuidRule,
+		},
+		Spec: &rule,
+	}
+	_, err = ccnplAsCNP.Parse()
+	c.Assert(err, IsNil)
+
+	// Now test a CNP and CCNP with an EndpointSelector only.
+	rule.EndpointSelector = prevEPSelector
+	rule.NodeSelector = emptySelector
+
+	// CNP and CCNP parse is allowed to have an EndpointSelector.
+	_, err = cnpl.Parse()
+	c.Assert(err, IsNil)
+	_, err = ccnpl.Parse()
+	c.Assert(err, IsNil)
+	_, err = ccnplAsCNP.Parse()
+	c.Assert(err, IsNil)
+}
+
+func (s *CiliumV2Suite) TestCiliumNodeInstanceID(c *C) {
+	c.Assert((*CiliumNode)(nil).InstanceID(), Equals, "")
+	c.Assert((&CiliumNode{}).InstanceID(), Equals, "")
+	c.Assert((&CiliumNode{Spec: NodeSpec{InstanceID: "foo"}}).InstanceID(), Equals, "foo")
+	c.Assert((&CiliumNode{Spec: NodeSpec{InstanceID: "foo", ENI: eniTypes.ENISpec{InstanceID: "bar"}}}).InstanceID(), Equals, "foo")
+	c.Assert((&CiliumNode{Spec: NodeSpec{ENI: eniTypes.ENISpec{InstanceID: "bar"}}}).InstanceID(), Equals, "bar")
+}
+
+func BenchmarkSpecEquals(b *testing.B) {
+	r := &CiliumNetworkPolicy{
+		Spec: &api.Rule{
+			EndpointSelector: api.EndpointSelector{
+				LabelSelector: &slim_metav1.LabelSelector{
+					MatchLabels: map[string]string{
+						"foo3": "bar3",
+						"foo4": "bar4",
+					},
+					MatchExpressions: []slim_metav1.LabelSelectorRequirement{
+						{
+							Key:      "any.foo",
+							Operator: "NotIn",
+							Values:   []string{"default"},
+						},
+					},
+				},
+			},
+			Ingress: []api.IngressRule{
+				{
+					FromEndpoints: []api.EndpointSelector{
+						{
+							LabelSelector: &slim_metav1.LabelSelector{
+								MatchLabels: map[string]string{
+									"foo3": "bar3",
+									"foo4": "bar4",
+								},
+								MatchExpressions: []slim_metav1.LabelSelectorRequirement{
+									{
+										Key:      "any.foo",
+										Operator: "NotIn",
+										Values:   []string{"default"},
+									},
+								},
+							},
+						},
+					},
+					ToPorts: []api.PortRule{{
+						Ports: []api.PortProtocol{
+							{
+								Port:     "8080",
+								Protocol: "TCP",
+							},
+						},
+						TerminatingTLS: &api.TLSContext{
+							Secret: &api.Secret{
+								Namespace: "",
+								Name:      "",
+							},
+							TrustedCA:   "",
+							Certificate: "",
+							PrivateKey:  "",
+						},
+						OriginatingTLS: &api.TLSContext{
+							Secret: &api.Secret{
+								Namespace: "",
+								Name:      "",
+							},
+							TrustedCA:   "",
+							Certificate: "",
+							PrivateKey:  "",
+						},
+						Rules: &api.L7Rules{
+							HTTP: []api.PortRuleHTTP{
+								{
+									Path:   "path",
+									Method: "method",
+									Host:   "host",
+								},
+							},
+						},
+					}},
+					FromCIDR:     nil,
+					FromCIDRSet:  nil,
+					FromEntities: nil,
+				},
+			},
+		},
+	}
+	o := r.DeepCopy()
+	if !r.DeepEqual(o) {
+		b.Error("Both structures should be equal!")
+	}
+	b.Run("Reflected SpecEquals", func(b *testing.B) {
+		b.ReportAllocs()
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			reflect.DeepEqual(r.Spec, o.Spec)
+			reflect.DeepEqual(r.Specs, o.Specs)
+		}
+	})
+	b.Run("Generated SpecEquals", func(b *testing.B) {
+		b.ReportAllocs()
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			r.DeepEqual(o)
+		}
+	})
 }

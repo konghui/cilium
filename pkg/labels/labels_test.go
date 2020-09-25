@@ -18,6 +18,7 @@ package labels
 
 import (
 	"encoding/json"
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -36,6 +37,7 @@ type LabelsSuite struct{}
 var _ = Suite(&LabelsSuite{})
 
 var (
+	// Elements are sorted by the key
 	lblsArray = []string{`unspec:%=%ed`, `unspec://=/=`, `unspec:foo=bar`, `unspec:foo2==bar2`, `unspec:foo=====`, `unspec:foo\\==\=`, `unspec:key=`}
 	lbls      = Labels{
 		"foo":    NewLabel("foo", "bar", LabelSourceUnspec),
@@ -62,9 +64,14 @@ func (s *LabelsSuite) TestSortMap(c *C) {
 	c.Assert(sortedMap, checker.DeepEquals, []byte(lblsString))
 }
 
-type lblTest struct {
-	label  string
-	result Label
+func (s *LabelsSuite) TestLabelArraySorted(c *C) {
+	lblsString := strings.Join(lblsArray, ";")
+	lblsString += ";"
+	str := ""
+	for _, l := range lbls.LabelArray() {
+		str += fmt.Sprintf(`%s:%s=%s;`, l.Source, l.Key, l.Value)
+	}
+	c.Assert(str, checker.DeepEquals, lblsString)
 }
 
 func (s *LabelsSuite) TestMap2Labels(c *C) {

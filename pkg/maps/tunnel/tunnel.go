@@ -44,19 +44,14 @@ type Map struct {
 func NewTunnelMap(name string) *Map {
 	return &Map{Map: bpf.NewMap(MapName,
 		bpf.MapTypeHash,
-		int(unsafe.Sizeof(tunnelEndpoint{})),
-		int(unsafe.Sizeof(tunnelEndpoint{})),
+		&TunnelEndpoint{},
+		int(unsafe.Sizeof(TunnelEndpoint{})),
+		&TunnelEndpoint{},
+		int(unsafe.Sizeof(TunnelEndpoint{})),
 		MaxEntries,
 		0, 0,
-		func(key []byte, value []byte) (bpf.MapKey, bpf.MapValue, error) {
-			k, v := tunnelEndpoint{}, tunnelEndpoint{}
-
-			if err := bpf.ConvertKeyValue(key, value, &k, &v); err != nil {
-				return nil, nil, err
-			}
-
-			return &k, &v, nil
-		}).WithCache(),
+		bpf.ConvertKeyValue,
+	).WithCache(),
 	}
 }
 
@@ -64,25 +59,29 @@ func init() {
 	TunnelMap.NonPersistent = true
 }
 
-type tunnelEndpoint struct {
+// +k8s:deepcopy-gen=true
+// +k8s:deepcopy-gen:interfaces=github.com/cilium/cilium/pkg/bpf.MapKey
+// +k8s:deepcopy-gen:interfaces=github.com/cilium/cilium/pkg/bpf.MapValue
+type TunnelEndpoint struct {
 	bpf.EndpointKey
 }
 
-func newTunnelEndpoint(ip net.IP) *tunnelEndpoint {
-	return &tunnelEndpoint{
+func newTunnelEndpoint(ip net.IP) *TunnelEndpoint {
+	return &TunnelEndpoint{
 		EndpointKey: bpf.NewEndpointKey(ip),
 	}
 }
 
-func (v tunnelEndpoint) NewValue() bpf.MapValue { return &tunnelEndpoint{} }
+func (v TunnelEndpoint) NewValue() bpf.MapValue { return &TunnelEndpoint{} }
 
 // SetTunnelEndpoint adds/replaces a prefix => tunnel-endpoint mapping
-func (m *Map) SetTunnelEndpoint(prefix net.IP, endpoint net.IP) error {
+func (m *Map) SetTunnelEndpoint(encryptKey uint8, prefix, endpoint net.IP) error {
 	key, val := newTunnelEndpoint(prefix), newTunnelEndpoint(endpoint)
-
+	val.EndpointKey.Key = encryptKey
 	log.WithFields(logrus.Fields{
 		fieldPrefix:   prefix,
 		fieldEndpoint: endpoint,
+		fieldKey:      encryptKey,
 	}).Debug("Updating tunnel map entry")
 
 	return TunnelMap.Update(key, val)
@@ -95,7 +94,7 @@ func (m *Map) GetTunnelEndpoint(prefix net.IP) (net.IP, error) {
 		return net.IP{}, err
 	}
 
-	return val.(*tunnelEndpoint).ToIP(), nil
+	return val.(*TunnelEndpoint).ToIP(), nil
 }
 
 // DeleteTunnelEndpoint removes a prefix => tunnel-endpoint mapping

@@ -15,28 +15,22 @@
 package proxy
 
 import (
-	"fmt"
-	"github.com/cilium/cilium/pkg/revert"
-	"net"
-	"time"
-
 	"github.com/cilium/cilium/pkg/completion"
 	"github.com/cilium/cilium/pkg/lock"
-	"github.com/cilium/cilium/pkg/maps/proxymap"
 	"github.com/cilium/cilium/pkg/policy"
 	"github.com/cilium/cilium/pkg/proxy/logger"
+	"github.com/cilium/cilium/pkg/revert"
 )
 
 // RedirectImplementation is the generic proxy redirect interface that each
 // proxy redirect type must implement
 type RedirectImplementation interface {
-	// UpdateRules notifies the proxy implementation that the new rules in
-	// parameter l4 are to be applied. The implementation should .Add to the
-	// WaitGroup if the update is asynchronous and the update should not return
-	// until it is complete.
+	// UpdateRules updates the rules for the given proxy redirect.
+	// The implementation should .Add to the WaitGroup if the update is
+	// asynchronous and the update should not return until it is complete.
 	// The returned RevertFunc must be non-nil.
 	// Note: UpdateRules is not called when a redirect is created.
-	UpdateRules(wg *completion.WaitGroup, l4 *policy.L4Filter) (revert.RevertFunc, error)
+	UpdateRules(wg *completion.WaitGroup) (revert.RevertFunc, error)
 
 	// Close closes and cleans up resources associated with the redirect
 	// implementation. The implementation should .Add to the WaitGroup if the
@@ -48,56 +42,37 @@ type RedirectImplementation interface {
 type Redirect struct {
 	// The following fields are only written to during initialization, it
 	// is safe to read these fields without locking the mutex
-
-	// ProxyPort is the port the redirects redirects to where the proxy is
-	// listening on
-	ProxyPort      uint16
+	listener       *ProxyPort
+	dstPort        uint16
 	endpointID     uint64
-	id             string
-	ingress        bool
 	localEndpoint  logger.EndpointUpdater
-	parserType     policy.L7ParserType
-	created        time.Time
 	implementation RedirectImplementation
 
 	// The following fields are updated while the redirect is alive, the
 	// mutex must be held to read and write these fields
-	mutex       lock.RWMutex
-	lastUpdated time.Time
-	rules       policy.L7DataMap
+	mutex lock.RWMutex
+	rules policy.L7DataMap
 }
 
-func newRedirect(localEndpoint logger.EndpointUpdater, id string) *Redirect {
+func newRedirect(localEndpoint logger.EndpointUpdater, listener *ProxyPort, dstPort uint16) *Redirect {
 	return &Redirect{
+		listener:      listener,
+		dstPort:       dstPort,
+		endpointID:    localEndpoint.GetID(),
 		localEndpoint: localEndpoint,
-		id:            id,
-		created:       time.Now(),
-		lastUpdated:   time.Now(),
 	}
 }
 
 // updateRules updates the rules of the redirect, Redirect.mutex must be held
-func (r *Redirect) updateRules(l4 *policy.L4Filter) revert.RevertFunc {
+// 'implementation' is not initialized when this is called the first time.
+// TODO: Replace this with RedirectImplementation UpdateRules method!
+func (r *Redirect) updateRules(p policy.ProxyPolicy) revert.RevertFunc {
 	oldRules := r.rules
-	r.rules = make(policy.L7DataMap, len(l4.L7RulesPerEp))
-	for key, val := range l4.L7RulesPerEp {
-		r.rules[key] = val
-	}
+	r.rules = p.CopyL7RulesPerEndpoint()
 	return func() error {
 		r.mutex.Lock()
 		r.rules = oldRules
 		r.mutex.Unlock()
 		return nil
 	}
-}
-
-// removeProxyMapEntryOnClose is called after the proxy has closed a connection
-// and will remove the proxymap entry for that connection
-func (r *Redirect) removeProxyMapEntryOnClose(c net.Conn) error {
-	key, err := getProxyMapKey(c, r.ProxyPort)
-	if err != nil {
-		return fmt.Errorf("unable to extract proxymap key: %s", err)
-	}
-
-	return proxymap.Delete(key)
 }

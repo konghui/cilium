@@ -1,4 +1,4 @@
-// Copyright 2018 Authors of Cilium
+// Copyright 2018-2020 Authors of Cilium
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -15,46 +15,122 @@
 package utils
 
 import (
-	"github.com/cilium/cilium/pkg/versioned"
+	"fmt"
+	"sort"
 
-	"k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/kubernetes/pkg/kubelet/types"
+	slimcorev1 "github.com/cilium/cilium/pkg/k8s/slim/k8s/apis/core/v1"
+	"github.com/cilium/cilium/pkg/k8s/slim/k8s/apis/labels"
+	"github.com/cilium/cilium/pkg/k8s/slim/k8s/apis/selection"
+	"github.com/cilium/cilium/pkg/option"
+
+	v1 "k8s.io/api/core/v1"
+	v1meta "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
+const (
+	// ServiceProxyNameLabel is the label for service proxy name in k8s service related
+	// objects.
+	serviceProxyNameLabel = "service.kubernetes.io/service-proxy-name"
+)
+
+type NamespaceNameGetter interface {
+	GetNamespace() string
+	GetName() string
+}
+
 // ExtractNamespace extracts the namespace of ObjectMeta.
-func ExtractNamespace(np metav1.Object) string {
+// For cluster scoped objects the Namespace field is empty and this function
+// assumes that the object is returned from kubernetes itself implying that
+// the namespace is empty only and only when the Object is cluster scoped
+// and thus returns empty namespace for such objects.
+func ExtractNamespace(np NamespaceNameGetter) string {
+	return np.GetNamespace()
+}
+
+// ExtractNamespaceOrDefault extracts the namespace of ObjectMeta, it returns default
+// namespace if the namespace field in the ObjectMeta is empty.
+func ExtractNamespaceOrDefault(np NamespaceNameGetter) string {
 	ns := np.GetNamespace()
 	if ns == "" {
 		return v1.NamespaceDefault
 	}
+
 	return ns
 }
 
 // GetObjNamespaceName returns the object's namespace and name.
-func GetObjNamespaceName(obj metav1.Object) string {
-	return ExtractNamespace(obj) + "/" + obj.GetName()
-}
-
-// GetObjUID returns the object's namespace and name.
-func GetObjUID(obj metav1.Object) string {
-	return GetObjNamespaceName(obj) + "/" + string(obj.GetUID())
-}
-
-// GetVerStructFrom returns a versionedObject of the given objMeta.
-func GetVerStructFrom(objMeta metav1.Object) (versioned.UUID, versioned.Object) {
-	uuid := versioned.UUID(GetObjUID(objMeta))
-	v := versioned.ParseVersion(objMeta.GetResourceVersion())
-	vs := versioned.Object{
-		Data:    objMeta,
-		Version: v,
+// If the object is cluster scoped then the function returns only the object name
+// without any namespace prefix.
+func GetObjNamespaceName(obj NamespaceNameGetter) string {
+	ns := ExtractNamespace(obj)
+	if ns == "" {
+		return obj.GetName()
 	}
-	return uuid, vs
+
+	return ns + "/" + obj.GetName()
 }
 
-// IsInfraContainer returns true if the given set of labels represent a infra
-// container.
-func IsInfraContainer(labels map[string]string) bool {
-	return labels[types.KubernetesContainerNameLabel] == "POD"
+// GetServiceListOptionsModifier returns the options modifier for service object list.
+// This methods returns a ListOptions modifier which adds a label selector to only
+// select services that are in context of Cilium.
+// Like kube-proxy Cilium does not select services containing k8s headless service label.
+// We honor service.kubernetes.io/service-proxy-name label in the service object and only
+// handle services that match our service proxy name. If the service proxy name for Cilium
+// is an empty string, we assume that Cilium is the default service handler in which case
+// we select all services that don't have the above mentioned label.
+func GetServiceListOptionsModifier() (func(options *v1meta.ListOptions), error) {
+	var (
+		serviceNameSelector, nonHeadlessServiceSelector *labels.Requirement
+		err                                             error
+	)
 
+	nonHeadlessServiceSelector, err = labels.NewRequirement(v1.IsHeadlessService, selection.DoesNotExist, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	if option.Config.K8sServiceProxyName == "" {
+		serviceNameSelector, err = labels.NewRequirement(
+			serviceProxyNameLabel, selection.DoesNotExist, nil)
+	} else {
+		serviceNameSelector, err = labels.NewRequirement(
+			serviceProxyNameLabel, selection.DoubleEquals, []string{option.Config.K8sServiceProxyName})
+	}
+
+	if err != nil {
+		return nil, err
+	}
+
+	labelSelector := labels.NewSelector()
+	labelSelector = labelSelector.Add(*serviceNameSelector, *nonHeadlessServiceSelector)
+
+	return func(options *v1meta.ListOptions) {
+		options.LabelSelector = labelSelector.String()
+	}, nil
+}
+
+// ValidIPs return a sorted slice of unique IP addresses retrieved from the given PodStatus.
+// Returns an error when no IPs are found.
+func ValidIPs(podStatus slimcorev1.PodStatus) ([]string, error) {
+	if len(podStatus.PodIPs) == 0 && len(podStatus.PodIP) == 0 {
+		return nil, fmt.Errorf("empty PodIPs")
+	}
+
+	// make it a set first to avoid repeated IP addresses
+	ipsMap := make(map[string]struct{}, 1+len(podStatus.PodIPs))
+	if podStatus.PodIP != "" {
+		ipsMap[podStatus.PodIP] = struct{}{}
+	}
+	for _, podIP := range podStatus.PodIPs {
+		if podIP.IP != "" {
+			ipsMap[podIP.IP] = struct{}{}
+		}
+	}
+
+	ips := make([]string, 0, len(ipsMap))
+	for ipStr := range ipsMap {
+		ips = append(ips, ipStr)
+	}
+	sort.Strings(ips)
+	return ips, nil
 }

@@ -30,8 +30,8 @@ import (
 type ParserFactory struct{}
 
 // Create creates binary memcached parser
-func (p *ParserFactory) Create(connection *proxylib.Connection) proxylib.Parser {
-	log.Infof("ParserFactory: Create: %v", connection)
+func (p *ParserFactory) Create(connection *proxylib.Connection) interface{} {
+	log.Debugf("ParserFactory: Create: %v", connection)
 	return &Parser{connection: connection, injectQueue: make([]queuedInject, 0)}
 }
 
@@ -95,7 +95,7 @@ func (p *Parser) OnData(reply, endStream bool, dataBuffers [][]byte) (proxylib.O
 	}
 
 	logEntry := &cilium.LogEntry_GenericL7{
-		&cilium.L7LogEntry{
+		GenericL7: &cilium.L7LogEntry{
 			Proto: "binarymemcached",
 			Fields: map[string]string{
 				"opcode": strconv.Itoa(int(opcode)),

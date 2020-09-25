@@ -1,4 +1,4 @@
-// Copyright 2016-2017 Authors of Cilium
+// Copyright 2016-2020 Authors of Cilium
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -16,70 +16,169 @@
 package k8s
 
 import (
-	goerrors "errors"
+	"context"
 	"fmt"
+	"net"
+	"net/http"
+	"strings"
 	"time"
 
 	"github.com/cilium/cilium/api/v1/models"
+	clientset "github.com/cilium/cilium/pkg/k8s/client/clientset/versioned"
+	k8smetrics "github.com/cilium/cilium/pkg/k8s/metrics"
+	watcher_client "github.com/cilium/cilium/pkg/k8s/slim/k8s/clientset"
 	"github.com/cilium/cilium/pkg/logging/logfields"
+	"github.com/cilium/cilium/pkg/option"
+	"github.com/cilium/cilium/pkg/version"
 
-	go_version "github.com/hashicorp/go-version"
+	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
+	"k8s.io/client-go/util/connrotation"
 )
 
 var (
-	// ErrNilNode is returned when the Kubernetes API server has returned a nil node
-	ErrNilNode = goerrors.New("API server returned nil node")
-
 	// k8sCli is the default client.
 	k8sCli = &K8sClient{}
+
+	// k8sWatcherCli is the client dedicated k8s structure watchers.
+	k8sWatcherCli = &K8sClient{}
+
+	// k8sCiliumCli is the default Cilium client.
+	k8sCiliumCli = &K8sCiliumClient{}
 )
 
-// CreateConfig creates a rest.Config for a given endpoint using a kubeconfig file.
-func createConfig(endpoint, kubeCfgPath string) (*rest.Config, error) {
-	// If the endpoint and the kubeCfgPath are empty then we can try getting
+// createConfig creates a rest.Config for connecting to k8s api-server.
+//
+// The precedence of the configuration selection is the following:
+// 1. kubeCfgPath
+// 2. apiServerURL (https if specified)
+// 3. rest.InClusterConfig().
+func createConfig(apiServerURL, kubeCfgPath string, qps float32, burst int) (*rest.Config, error) {
+	var (
+		config *rest.Config
+		err    error
+	)
+	userAgent := fmt.Sprintf("Cilium %s", version.Version)
+
+	switch {
+	// If the apiServerURL and the kubeCfgPath are empty then we can try getting
 	// the rest.Config from the InClusterConfig
-	if endpoint == "" && kubeCfgPath == "" {
-		return rest.InClusterConfig()
+	case apiServerURL == "" && kubeCfgPath == "":
+		if config, err = rest.InClusterConfig(); err != nil {
+			return nil, err
+		}
+	case kubeCfgPath != "":
+		if config, err = clientcmd.BuildConfigFromFlags("", kubeCfgPath); err != nil {
+			return nil, err
+		}
+	case strings.HasPrefix(apiServerURL, "https://"):
+		if config, err = rest.InClusterConfig(); err != nil {
+			return nil, err
+		}
+		config.Host = apiServerURL
+	default:
+		config = &rest.Config{Host: apiServerURL, UserAgent: userAgent}
 	}
 
-	if kubeCfgPath != "" {
-		return clientcmd.BuildConfigFromFlags("", kubeCfgPath)
+	setConfig(config, userAgent, qps, burst)
+	return config, nil
+}
+
+func setConfig(config *rest.Config, userAgent string, qps float32, burst int) {
+	if config.UserAgent != "" {
+		config.UserAgent = userAgent
 	}
-
-	config := &rest.Config{Host: endpoint}
-	err := rest.SetKubernetesDefaults(config)
-
-	return config, err
+	if qps != 0.0 {
+		config.QPS = qps
+	}
+	if burst != 0 {
+		config.Burst = burst
+	}
 }
 
 // CreateConfigFromAgentResponse creates a client configuration from a
 // models.DaemonConfigurationResponse
 func CreateConfigFromAgentResponse(resp *models.DaemonConfiguration) (*rest.Config, error) {
-	return createConfig(resp.Status.K8sEndpoint, resp.Status.K8sConfiguration)
+	return createConfig(resp.Status.K8sEndpoint, resp.Status.K8sConfiguration, GetQPS(), GetBurst())
 }
 
 // CreateConfig creates a client configuration based on the configured API
 // server and Kubeconfig path
 func CreateConfig() (*rest.Config, error) {
-	return createConfig(GetAPIServer(), GetKubeconfigPath())
+	return createConfig(GetAPIServerURL(), GetKubeconfigPath(), GetQPS(), GetBurst())
+}
+
+func setDialer(config *rest.Config) func() {
+	if option.Config.K8sHeartbeatTimeout == 0 {
+		return func() {}
+	}
+	ctx := (&net.Dialer{
+		Timeout:   option.Config.K8sHeartbeatTimeout,
+		KeepAlive: option.Config.K8sHeartbeatTimeout,
+	}).DialContext
+	dialer := connrotation.NewDialer(ctx)
+	config.Dial = dialer.DialContext
+	return dialer.CloseAll
+}
+
+func runHeartbeat(heartBeat func(context.Context) error, timeout time.Duration, closeAllConns ...func()) {
+	expireDate := time.Now().Add(-timeout)
+	// Don't even perform a health check if we have received a successful
+	// k8s event in the last 'timeout' duration
+	if k8smetrics.LastSuccessInteraction.Time().After(expireDate) {
+		return
+	}
+
+	done := make(chan error)
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	go func() {
+		// If we have reached up to this point to perform a heartbeat to
+		// kube-apiserver then we should close the connections if we receive
+		// any error at all except if we receive a http.StatusTooManyRequests
+		// which means the server is overloaded and only for this reason we
+		// will not close all connections.
+		err := heartBeat(ctx)
+		switch t := err.(type) {
+		case *errors.StatusError:
+			if t.ErrStatus.Code != http.StatusTooManyRequests {
+				done <- err
+			}
+		default:
+			done <- err
+		}
+		close(done)
+	}()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			log.WithError(err).Warn("Network status error received, restarting client connections")
+			for _, fn := range closeAllConns {
+				fn()
+			}
+		}
+	case <-ctx.Done():
+		log.Warn("Heartbeat timed out, restarting client connections")
+		for _, fn := range closeAllConns {
+			fn()
+		}
+	}
 }
 
 // CreateClient creates a new client to access the Kubernetes API
-func CreateClient(config *rest.Config) (*kubernetes.Clientset, error) {
-	cs, err := kubernetes.NewForConfig(config)
-	if err != nil {
-		return nil, err
-	}
+func CreateClient(config *rest.Config, cs kubernetes.Interface) error {
 	stop := make(chan struct{})
 	timeout := time.NewTimer(time.Minute)
 	defer timeout.Stop()
+	var err error
 	wait.Until(func() {
-		log.Info("Waiting for k8s api-server to be ready...")
+		// FIXME: Use config.String() when we rebase to latest go-client
+		log.WithField("host", config.Host).Info("Establishing connection to apiserver")
 		err = isConnReady(cs)
 		if err == nil {
 			close(stop)
@@ -93,43 +192,14 @@ func CreateClient(config *rest.Config) (*kubernetes.Clientset, error) {
 		}
 	}, 5*time.Second, stop)
 	if err == nil {
-		log.WithField(logfields.IPAddr, config.Host).Info("Connected to k8s api-server")
+		log.Info("Connected to apiserver")
 	}
-	return cs, err
+	return err
 }
 
-// GetServerVersion returns the kubernetes api-server version.
-func GetServerVersion() (ver *go_version.Version, err error) {
-	sv, err := Client().Discovery().ServerVersion()
-	if err != nil {
-		return nil, err
-	}
-
-	// Try GitVersion first. In case of error fallback to MajorMinor
-	if sv.GitVersion != "" {
-		// This is a string like "v1.9.0"
-		ver, err = go_version.NewVersion(sv.GitVersion)
-		if err == nil {
-			return ver, err
-		}
-	}
-
-	if sv.Major != "" && sv.Minor != "" {
-		ver, err = go_version.NewVersion(fmt.Sprintf("%s.%s", sv.Major, sv.Minor))
-		if err == nil {
-			return ver, nil
-		}
-	}
-
-	if err != nil {
-		return nil, fmt.Errorf("cannot parse k8s server version from %+v: %s", sv, err)
-	}
-	return nil, fmt.Errorf("cannot parse k8s server version from %+v", sv)
-}
-
-// isConnReady returns the err for the controller-manager status
-func isConnReady(c *kubernetes.Clientset) error {
-	_, err := c.CoreV1().ComponentStatuses().Get("controller-manager", metav1.GetOptions{})
+// isConnReady returns the err for the kube-system namespace get
+func isConnReady(c kubernetes.Interface) error {
+	_, err := c.CoreV1().Namespaces().Get(context.TODO(), "kube-system", metav1.GetOptions{})
 	return err
 }
 
@@ -138,18 +208,58 @@ func Client() *K8sClient {
 	return k8sCli
 }
 
-func createDefaultClient() error {
+func WatcherCli() *K8sClient {
+	return k8sWatcherCli
+}
+
+func createDefaultClient() (rest.Interface, func(), error) {
 	restConfig, err := CreateConfig()
 	if err != nil {
-		return fmt.Errorf("unable to create k8s client rest configuration: %s", err)
+		return nil, nil, fmt.Errorf("unable to create k8s client rest configuration: %s", err)
 	}
+	restConfig.ContentConfig.ContentType = `application/vnd.kubernetes.protobuf`
 
-	createdK8sClient, err := CreateClient(restConfig)
+	closeAllConns := setDialer(restConfig)
+
+	createdK8sClient, err := kubernetes.NewForConfig(restConfig)
 	if err != nil {
-		return fmt.Errorf("unable to create k8s client: %s", err)
+		return nil, nil, err
+	}
+	err = CreateClient(restConfig, createdK8sClient)
+	if err != nil {
+		return nil, nil, fmt.Errorf("unable to create k8s client: %s", err)
 	}
 
 	k8sCli.Interface = createdK8sClient
 
-	return nil
+	createK8sWatcherCli, err := watcher_client.NewForConfig(restConfig)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	k8sWatcherCli.Interface = createK8sWatcherCli
+
+	return createdK8sClient.RESTClient(), closeAllConns, nil
+}
+
+// CiliumClient returns the default Cilium Kubernetes client.
+func CiliumClient() *K8sCiliumClient {
+	return k8sCiliumCli
+}
+
+func createDefaultCiliumClient() (func(), error) {
+	restConfig, err := CreateConfig()
+	if err != nil {
+		return nil, fmt.Errorf("unable to create k8s client rest configuration: %s", err)
+	}
+
+	closeAllConns := setDialer(restConfig)
+	createdCiliumK8sClient, err := clientset.NewForConfig(restConfig)
+	if err != nil {
+		return nil, fmt.Errorf("unable to create k8s client: %s", err)
+	}
+
+	k8sCiliumCli.Interface = createdCiliumK8sClient
+
+	return closeAllConns, nil
 }

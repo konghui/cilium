@@ -26,7 +26,6 @@ import (
 	"text/tabwriter"
 
 	"github.com/cilium/cilium/pkg/bpf"
-	"github.com/cilium/cilium/pkg/color"
 	endpointid "github.com/cilium/cilium/pkg/endpoint/id"
 	"github.com/cilium/cilium/pkg/identity"
 	"github.com/cilium/cilium/pkg/maps/policymap"
@@ -103,7 +102,7 @@ func requireServiceID(cmd *cobra.Command, args []string) {
 func TablePrinter(firstTitle, secondTitle string, data map[string][]string) {
 	w := tabwriter.NewWriter(os.Stdout, 5, 0, 3, ' ', 0)
 
-	fmt.Fprintf(w, "%s\t%s\t\n", firstTitle, secondTitle)
+	fmt.Fprintf(w, "%s\t%s\n", firstTitle, secondTitle)
 
 	for key, value := range data {
 		for k, v := range value {
@@ -121,7 +120,7 @@ func TablePrinter(firstTitle, secondTitle string, data map[string][]string) {
 // Search 'result' for strings with escaped JSON inside, and expand the JSON.
 func expandNestedJSON(result bytes.Buffer) (bytes.Buffer, error) {
 	reStringWithJSON := regexp.MustCompile(`"[^"\\{]*{.*[^\\]"`)
-	reJSON := regexp.MustCompile(`{.*}`)
+	reJSON := regexp.MustCompile(`{(.|\n)*}`)
 	for {
 		var (
 			loc    []int
@@ -153,17 +152,13 @@ func expandNestedJSON(result bytes.Buffer) (bytes.Buffer, error) {
 			return bytes.Buffer{}, fmt.Errorf("Failed to Unquote string: %s\n%s", err.Error(), string(quotedBytes))
 		}
 
-		// Find the JSON within the quoted string.
+		// Find the JSON within the unquoted string.
 		nestedStart := 0
 		nestedEnd := 0
-		if locs := reJSON.FindAllStringIndex(unquoted, -1); locs != nil {
-			// The last match is the longest one.
-			last := len(locs) - 1
-			nestedStart = locs[last][0]
-			nestedEnd = locs[last][1]
-		} else if reJSON.Match(quotedBytes) {
-			// The entire string is JSON
-			nestedEnd = len(unquoted)
+		// Find the left-most match
+		if loc = reJSON.FindStringIndex(unquoted); loc != nil {
+			nestedStart = loc[0]
+			nestedEnd = loc[1]
 		}
 
 		// Decode the nested JSON
@@ -172,7 +167,7 @@ func expandNestedJSON(result bytes.Buffer) (bytes.Buffer, error) {
 			m := make(map[string]interface{})
 			nested := bytes.NewBufferString(unquoted[nestedStart:nestedEnd])
 			if err := json.NewDecoder(nested).Decode(&m); err != nil {
-				return bytes.Buffer{}, fmt.Errorf("Failed to decode nested JSON: %s", err.Error())
+				return bytes.Buffer{}, fmt.Errorf("Failed to decode nested JSON: %s (\n%s\n)", err.Error(), unquoted[nestedStart:nestedEnd])
 			}
 			decodedBytes, err := json.MarshalIndent(m, indent, "  ")
 			if err != nil {
@@ -197,10 +192,8 @@ func expandNestedJSON(result bytes.Buffer) (bytes.Buffer, error) {
 // PolicyUpdateArgs is the parsed representation of a
 // bpf policy {add,delete} command.
 type PolicyUpdateArgs struct {
-	// endpointID is the identity of the endpoint provided as
-	// argument. If this identity is a reserved identity, then
-	// it is prefixed with 'reserved_'.
-	endpointID string
+	// path is the basename of the BPF map for this policy update.
+	path string
 
 	// trafficDirection represents the traffic direction provided
 	// as an argument e.g. `ingress`
@@ -251,6 +244,25 @@ func parsePolicyUpdateArgs(cmd *cobra.Command, args []string) *PolicyUpdateArgs 
 	return pa
 }
 
+func endpointToPolicyMapPath(endpointID string) (string, error) {
+	if endpointID == "" {
+		return "", fmt.Errorf("Need ID or label")
+	}
+
+	var mapName string
+	id, err := strconv.Atoi(endpointID)
+	if err == nil {
+		mapName = bpf.LocalMapName(policymap.MapName, uint16(id))
+	} else if numericIdentity := identity.GetReservedID(endpointID); numericIdentity != identity.IdentityUnknown {
+		mapSuffix := "reserved_" + strconv.FormatUint(uint64(numericIdentity), 10)
+		mapName = fmt.Sprintf("%s%s", policymap.MapName, mapSuffix)
+	} else {
+		return "", err
+	}
+
+	return bpf.MapPath(mapName), nil
+}
+
 func parsePolicyUpdateArgsHelper(args []string) (*PolicyUpdateArgs, error) {
 	trafficDirection := args[1]
 	parsedTd, err := parseTrafficString(trafficDirection)
@@ -258,9 +270,9 @@ func parsePolicyUpdateArgsHelper(args []string) (*PolicyUpdateArgs, error) {
 		return nil, fmt.Errorf("Failed to convert %s to a valid traffic direction: %s", args[1], err)
 	}
 
-	endpointID := args[0]
-	if numericIdentity := identity.GetReservedID(endpointID); numericIdentity != identity.IdentityUnknown {
-		endpointID = "reserved_" + strconv.FormatUint(uint64(numericIdentity), 10)
+	mapName, err := endpointToPolicyMapPath(args[0])
+	if err != nil {
+		return nil, fmt.Errorf("Failed to parse endpointID %q", args[0])
 	}
 
 	peerLbl, err := strconv.ParseUint(args[2], 10, 32)
@@ -293,7 +305,7 @@ func parsePolicyUpdateArgsHelper(args []string) (*PolicyUpdateArgs, error) {
 	}
 
 	pa := &PolicyUpdateArgs{
-		endpointID:       endpointID,
+		path:             mapName,
 		trafficDirection: parsedTd,
 		label:            label,
 		port:             port,
@@ -308,10 +320,12 @@ func parsePolicyUpdateArgsHelper(args []string) (*PolicyUpdateArgs, error) {
 // Adds the entry to the PolicyMap if add is true, otherwise the entry is
 // deleted.
 func updatePolicyKey(pa *PolicyUpdateArgs, add bool) {
-	policyMapPath := bpf.MapPath(policymap.MapName + pa.endpointID)
-	policyMap, _, err := policymap.OpenOrCreate(policyMapPath)
+	// The map needs not to be transparently initialized here even if
+	// it's not present for some reason. Triggering map recreation with
+	// OpenOrCreate when some map attribute had changed would be much worse.
+	policyMap, err := policymap.Open(pa.path)
 	if err != nil {
-		Fatalf("Cannot open policymap '%s' : %s", policyMapPath, err)
+		Fatalf("Cannot open policymap %q : %s", pa.path, err)
 	}
 
 	for _, proto := range pa.protocols {
@@ -343,11 +357,11 @@ func dumpConfig(Opts map[string]string) {
 		value = Opts[k]
 		if enabled, err := option.NormalizeBool(value); err != nil {
 			// If it cannot be parsed as a bool, just format the value.
-			fmt.Printf("%-24s %s\n", k, color.Green(value))
+			fmt.Printf("%-24s %s\n", k, value)
 		} else if enabled == option.OptionDisabled {
-			fmt.Printf("%-24s %s\n", k, color.Red("Disabled"))
+			fmt.Printf("%-24s %s\n", k, "Disabled")
 		} else {
-			fmt.Printf("%-24s %s\n", k, color.Green("Enabled"))
+			fmt.Printf("%-24s %s\n", k, "Enabled")
 		}
 	}
 }

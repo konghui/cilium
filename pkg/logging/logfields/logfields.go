@@ -16,6 +16,8 @@
 package logfields
 
 const (
+	// Annotations are any annotations for Pods
+	Annotations = "annotations"
 
 	// LogSubsys is the field denoting the subsystem when logging
 	LogSubsys = "subsys"
@@ -75,11 +77,20 @@ const (
 	// PolicyID is the identifier of a L3, L4 or L7 Policy. Ideally the .NumericIdentity
 	PolicyID = "policyID"
 
+	// AddedPolicyID is the .NumericIdentity, or set or them
+	AddedPolicyID = "policyID.Added"
+
+	// DeletedPolicyID is the .NumericIdentity, or set or them
+	DeletedPolicyID = "policyID.Deleted"
+
 	// L3PolicyID is the identifier of a L3 Policy
 	L3PolicyID = "policyID.L3"
 
 	// L4PolicyID is the identifier of a L4 Policy
 	L4PolicyID = "PolicyID.L4"
+
+	// IsRedirect is a boolean for if the entry is a redirect or not
+	IsRedirect = "IsRedirect"
 
 	// DNSName is a FQDN or not fully qualified name intended for DNS lookups
 	DNSName = "dnsName"
@@ -104,9 +115,6 @@ const (
 
 	// BPFCompilationTime is the time elapsed to build a BPF endpoint program
 	BPFCompilationTime = "BPFCompilationTime"
-
-	// PolicyRegenerationTime is the time elapsed to generate a policy
-	PolicyRegenerationTime = "policyRegenerationTime"
 
 	// EndpointRegenerationTime is the time elapsed to generate an endpoint
 	EndpointRegenerationTime = "endpointRegenerationTime"
@@ -141,6 +149,12 @@ const (
 	// Port is a L4 port
 	Port = "port"
 
+	// PortName is a k8s ContainerPort Name
+	PortName = "portName"
+
+	// NamedPorts is a set of named ports
+	NamedPorts = "namedPorts"
+
 	// Family is the L3 protocol family
 	Family = "family"
 
@@ -152,6 +166,12 @@ const (
 
 	// V6Prefix is a IPv6 subnet/CIDR prefix
 	V6Prefix = "v6Prefix"
+
+	// CIDR is a IPv4/IPv4 subnet/CIDR
+	CIDR = "cidr"
+
+	// MTU is the maximum transmission unit of one interface
+	MTU = "mtu"
 
 	// Interface is an interface id/name on the system
 	Interface = "interface"
@@ -168,11 +188,24 @@ const (
 	// NetNSName is a name of a network namespace
 	NetNSName = "netNSName"
 
-	// SHA is a sha of something
-	SHA = "sha"
+	// Hash is a hash of something
+	Hash = "hash"
 
 	// ServiceName is the orchestration framework name for a service
 	ServiceName = "serviceName"
+
+	// ServiceNamespace is the orchestration framework namespace of a service name
+	ServiceNamespace = "serviceNamespace"
+
+	// SessionAffinity indicates whether the ClientIP session affinity is enabled
+	// for the service
+	SessionAffinity = "sessionAffinity"
+
+	// SessionAffinityTimeout is a timeout for the session affinity
+	SessionAffinityTimeout = "sessionAffinityTimeout"
+
+	// LoadBalancerSourceRanges is the LB SVC source ranges
+	LoadBalancerSourceRanges = "loadBalancerSourceRanges"
 
 	// ClusterName is the name of the cluster
 	ClusterName = "clusterName"
@@ -183,11 +216,53 @@ const (
 	// ServiceIP is the IP of the service
 	ServiceIP = "serviceIP"
 
+	// ServiceKey is the key of the service in a BPF map
+	ServiceKey = "svcKey"
+
+	// ServiceValue is the value of the service in a BPF map
+	ServiceValue = "svcVal"
+
+	// ServiceType is the type of the service
+	ServiceType = "svcType"
+
+	// ServiceHealthCheckNodePort is the port on which we serve health checks
+	ServiceHealthCheckNodePort = "svcHealthCheckNodePort"
+
+	// ServiceTrafficPolicy is the traffic policy of the service
+	ServiceTrafficPolicy = "svcTrafficPolicy"
+
+	// BackendIDs is the map of backend IDs (lbmap) indexed by backend address
+	BackendIDs = "backendIDs"
+
+	// BackendID is the ID of the backend
+	BackendID = "backendID"
+
+	// Backends is the list of the service backends
+	Backends = "backends"
+
+	// BackendName is the name of the backend
+	BackendName = "backendName"
+
+	// BackendSlot is the backend slot number in a service BPF map
+	BackendSlot = "backendSlot"
+
 	// CiliumNetworkPolicy is a cilium specific NetworkPolicy
 	CiliumNetworkPolicy = "ciliumNetworkPolicy"
 
 	// CiliumNetworkPolicyName is the name of a CiliumNetworkPolicy
 	CiliumNetworkPolicyName = "ciliumNetworkPolicyName"
+
+	// CiliumClusterwideNetworkPolicyName is the name of the CiliumClusterWideNetworkPolicy
+	CiliumClusterwideNetworkPolicyName = "ciliumClusterwideNetworkPolicyName"
+
+	// BPFClockSource denotes the internal clock source (ktime vs jiffies)
+	BPFClockSource = "bpfClockSource"
+
+	// BPFInsnSet denotes the instruction set version
+	BPFInsnSet = "bpfInsnSet"
+
+	// CiliumLocalRedirectPolicyName is the name of a CiliumLocalRedirectPolicy
+	CiliumLocalRedirectName = "ciliumLocalRedirectPolicyName"
 
 	// BPFMapKey is a key from a BPF map
 	BPFMapKey = "bpfMapKey"
@@ -201,6 +276,12 @@ const (
 	// Device is the device name
 	Device = "device"
 
+	// Devices is the devices name
+	Devices = "devices"
+
+	//DirectRoutingDevice is the name of the direct routing device
+	DirectRoutingDevice = "directRoutingDevice"
+
 	// IpvlanMasterDevice is the ipvlan master device name
 	IpvlanMasterDevice = "ipvlanMasterDevice"
 
@@ -209,6 +290,9 @@ const (
 
 	// Tunnel is the tunnel name
 	Tunnel = "tunnel"
+
+	// Selector is a selector of any sort: endpoint, CIDR, toFQDNs
+	Selector = "Selector"
 
 	// EndpointLabelSelector is a selector for Endpoints by label
 	EndpointLabelSelector = "EndpointLabelSelector"
@@ -250,8 +334,11 @@ const (
 	// XDSStreamID is the ID of an xDS request stream.
 	XDSStreamID = "xdsStreamID"
 
-	// XDSVersionInfo is the version info of an xDS resource.
-	XDSVersionInfo = "xdsVersionInfo"
+	// XDSAckedVersion is the version of an xDS resource acked by Envoy.
+	XDSAckedVersion = "xdsAckedVersion"
+
+	// XDSCachedVersion is the version of an xDS resource currently in cache.
+	XDSCachedVersion = "xdsCachedVersion"
 
 	// XDSTypeURL is the URL that identifies an xDS resource type.
 	XDSTypeURL = "xdsTypeURL"
@@ -271,6 +358,9 @@ const (
 	// XDSResource is an xDS resource message.
 	XDSResource = "xdsResource"
 
+	// XDSDetail is detail string included in XDS NACKs.
+	XDSDetail = "xdsDetail"
+
 	// K8s-specific
 
 	// K8sNodeID is the k8s ID of a K8sNode
@@ -281,6 +371,9 @@ const (
 
 	// K8sSvcName is the name of a K8s service
 	K8sSvcName = "k8sSvcName"
+
+	// K8sSvcID is the K8s service name and namespace
+	K8sSvcID = "k8sSvcID"
 
 	// K8sSvcType is the k8s service type (e.g. NodePort, Loadbalancer etc.)
 	K8sSvcType = "k8sSvcType"
@@ -308,6 +401,12 @@ const (
 
 	// K8sAPIVersion is the version of the k8s API an object has
 	K8sAPIVersion = "k8sApiVersion"
+
+	// K8sNodeIP is the k8s Node IP (either InternalIP or ExternalIP)
+	K8sNodeIP = "k8sNodeIP"
+
+	// K8sUID is the UID of a K8s object
+	K8sUID = "k8sUID"
 
 	// Attempt is the attempt number if an operation is attempted multiple times
 	Attempt = "attempt"
@@ -350,4 +449,32 @@ const (
 
 	// Probe is the name of a status probe.
 	Probe = "probe"
+
+	// Key is the identity of the encryption key
+	Key = "key"
+
+	// SysParamName is the name of the kernel parameter (sysctl)
+	SysParamName = "sysParamName"
+
+	// SysParamValue is the value of the kernel parameter (sysctl)
+	SysParamValue = "sysParamValue"
+
+	// HashSeed is the seed value for the hashing algorithm
+	HashSeed = "hashSeed"
+
+	// HelpMessage is the help message corresponding to a log message.
+	// This is to make sure we keep separate contexts for logs and help messages.
+	HelpMessage = "helpMessage"
+
+	// LRPName is the parsed name of the Local Redirect Policy.
+	LRPName = "lrpName"
+
+	// LRPFrontend is the parsed frontend mappings of the Local Redirect Policy.
+	LRPFrontends = "lrpFrontends"
+
+	// LRPLocalEndpointSelector is the local endpoint selector of the Local Redirect Policy.
+	LRPLocalEndpointSelector = "lrpLocalEndpointSelector"
+
+	// LRPBackendPorts are the parsed backend ports of the Local Redirect Policy.
+	LRPBackendPorts = "lrpBackendPorts"
 )

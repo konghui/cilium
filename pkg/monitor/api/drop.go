@@ -1,4 +1,4 @@
-// Copyright 2018 Authors of Cilium
+// Copyright 2018-2020 Authors of Cilium
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -18,18 +18,30 @@ import (
 	"fmt"
 )
 
+// DropMin numbers below this are non-drop reason codes
+var DropMin uint8 = 130
+
+// DropInvalid is the Invalid packet reason.
+var DropInvalid uint8 = 2
+
 var errors = map[uint8]string{
 	0:   "Success",
 	2:   "Invalid packet",
-	130: "Invalid source mac",
-	131: "Invalid destination mac",
+	3:   "Interface",
+	4:   "Interface Decrypted",
+	5:   "LB, sock cgroup: No backend slot entry found",
+	6:   "LB, sock cgroup: No backend entry found",
+	7:   "LB, sock cgroup: Reverse entry update failed",
+	8:   "LB, sock cgroup: Reverse entry stale",
+	130: "Invalid source mac",      // Unused
+	131: "Invalid destination mac", // Unused
 	132: "Invalid source ip",
-	133: "Policy denied (L3)",
+	133: "Policy denied",
 	134: "Invalid packet",
 	135: "CT: Truncated or invalid header",
-	136: "CT: Missing TCP ACK flag",
+	136: "CT: Missing TCP ACK flag", // Unused
 	137: "CT: Unknown L4 protocol",
-	138: "CT: Can't create entry from packet",
+	138: "CT: Can't create entry from packet", // Unused
 	139: "Unsupported L3 protocol",
 	140: "Missed tail call",
 	141: "Error writing to packet",
@@ -39,24 +51,38 @@ var errors = map[uint8]string{
 	145: "Unknown ICMPv6 code",
 	146: "Unknown ICMPv6 type",
 	147: "Error retrieving tunnel key",
-	148: "Error retrieving tunnel options",
-	149: "Invalid Geneve option",
+	148: "Error retrieving tunnel options", // Unused
+	149: "Invalid Geneve option",           // Unused
 	150: "Unknown L3 target address",
-	151: "Not a local target address",
-	152: "No matching local container found",
+	151: "Stale or unroutable IP",
+	152: "No matching local container found", // Unused
 	153: "Error while correcting L3 checksum",
 	154: "Error while correcting L4 checksum",
 	155: "CT: Map insertion failed",
 	156: "Invalid IPv6 extension header",
 	157: "IP fragmentation not supported",
 	158: "Service backend not found",
-	159: "Policy denied (L4)",
 	160: "No tunnel/encapsulation endpoint (datapath BUG!)",
-	161: "Failed to insert into proxymap",
-	162: "Policy denied (CIDR)",
+	161: "Failed to insert into proxymap", // Unused
+	162: "Reached EDT rate-limiting drop horizon",
 	163: "Unknown connection tracking state",
 	164: "Local host is unreachable",
-	165: "No configuration available to perform policy decision",
+	165: "No configuration available to perform policy decision", // Unused
+	166: "Unsupported L2 protocol",
+	167: "No mapping for NAT masquerade",
+	168: "Unsupported protocol for NAT masquerade",
+	169: "FIB lookup failed",
+	170: "Encapsulation traffic is prohibited",
+	171: "Invalid identity",
+	172: "Unknown sender",
+	173: "NAT not needed",
+	174: "Is a ClusterIP",
+	175: "First logical datagram fragment not found",
+	176: "Forbidden ICMPv6 message",
+	177: "Denied by LB src range check",
+	178: "Socket lookup failed",
+	179: "Socket assign failed",
+	180: "Proxy redirection not supported for protocol",
 }
 
 // DropReason prints the drop reason in a human readable string

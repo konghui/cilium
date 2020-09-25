@@ -1,4 +1,4 @@
-// Copyright 2016-2018 Authors of Cilium
+// Copyright 2016-2019 Authors of Cilium
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -15,65 +15,74 @@
 package monitor
 
 import (
+	"bytes"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
+	"net"
+	"unsafe"
+
+	"github.com/cilium/cilium/pkg/byteorder"
+	"github.com/cilium/cilium/pkg/monitor/api"
+	"github.com/cilium/cilium/pkg/types"
 )
 
 const (
-	// TraceNotifyLen is the amount of packet data provided in a trace notification
-	TraceNotifyLen = 32
+	// traceNotifyCommonLen is the minimum length required to determine the version of the TN event.
+	traceNotifyCommonLen = 16
+	// traceNotifyV0Len is the amount of packet data provided in a trace notification v0.
+	traceNotifyV0Len = 32
+	// traceNotifyV1Len is the amount of packet data provided in a trace notification v1.
+	traceNotifyV1Len = 48
+	// TraceReasonEncryptMask is the bit used to indicate encryption or not
+	TraceReasonEncryptMask uint8 = 0x80
 )
 
-// TraceNotify is the message format of a trace notification in the BPF ring buffer
-type TraceNotify struct {
+const (
+	// TraceNotifyFlagIsIPv6 is set in TraceNotify.Flags when the
+	// notification refers to an IPv6 flow
+	TraceNotifyFlagIsIPv6 uint8 = 1
+)
+
+const (
+	TraceNotifyVersion0 = iota
+	TraceNotifyVersion1
+)
+
+// TraceNotifyV0 is the common message format for versions 0 and 1.
+type TraceNotifyV0 struct {
 	Type     uint8
 	ObsPoint uint8
 	Source   uint16
 	Hash     uint32
 	OrigLen  uint32
-	CapLen   uint32
+	CapLen   uint16
+	Version  uint16
 	SrcLabel uint32
 	DstLabel uint32
 	DstID    uint16
 	Reason   uint8
-	Pad      uint8
+	Flags    uint8
 	Ifindex  uint32
 	// data
 }
 
-// Available observation points.
-const (
-	TraceToLxc = iota
-	TraceToProxy
-	TraceToHost
-	TraceToStack
-	TraceToOverlay
-	TraceFromLxc
-	TraceFromProxy
-	TraceFromHost
-	TraceFromStack
-	TraceFromOverlay
-)
-
-var traceObsPoints = map[uint8]string{
-	TraceToLxc:       "to-endpoint",
-	TraceToProxy:     "to-proxy",
-	TraceToHost:      "to-host",
-	TraceToStack:     "to-stack",
-	TraceToOverlay:   "to-overlay",
-	TraceFromLxc:     "from-endpoint",
-	TraceFromProxy:   "from-proxy",
-	TraceFromHost:    "from-host",
-	TraceFromStack:   "from-stack",
-	TraceFromOverlay: "from-overlay",
+// TraceNotifyV1 is the version 1 message format.
+type TraceNotifyV1 struct {
+	TraceNotifyV0
+	OrigIP types.IPv6
+	// data
 }
 
-func obsPoint(obsPoint uint8) string {
-	if str, ok := traceObsPoints[obsPoint]; ok {
-		return str
+// TraceNotify is the message format of a trace notification in the BPF ring buffer
+type TraceNotify TraceNotifyV1
+
+var (
+	traceNotifyLength = map[uint16]uint{
+		TraceNotifyVersion0: traceNotifyV0Len,
+		TraceNotifyVersion1: traceNotifyV1Len,
 	}
-	return fmt.Sprintf("%d", obsPoint)
-}
+)
 
 // Reasons for forwarding a packet.
 const (
@@ -91,50 +100,119 @@ var traceReasons = map[uint8]string{
 }
 
 func connState(reason uint8) string {
-	if str, ok := traceReasons[reason]; ok {
+	r := reason & ^TraceReasonEncryptMask
+	if str, ok := traceReasons[r]; ok {
 		return str
 	}
 	return fmt.Sprintf("%d", reason)
 }
 
+func fetchVersion(data []byte, tn *TraceNotify) (version uint16, err error) {
+	offset := unsafe.Offsetof(tn.Version)
+	length := unsafe.Sizeof(tn.Version)
+	reader := bytes.NewReader(data[offset : offset+length])
+	err = binary.Read(reader, byteorder.Native, &version)
+	return version, err
+}
+
+// DecodeTraceNotify will decode 'data' into the provided TraceNotify structure
+func DecodeTraceNotify(data []byte, tn *TraceNotify) error {
+	if len(data) < traceNotifyCommonLen {
+		return fmt.Errorf("Unknown trace event")
+	}
+
+	version, err := fetchVersion(data, tn)
+	if err != nil {
+		return err
+	}
+	switch version {
+	case TraceNotifyVersion0:
+		err = binary.Read(bytes.NewReader(data), byteorder.Native, &tn.TraceNotifyV0)
+	case TraceNotifyVersion1:
+		err = binary.Read(bytes.NewReader(data), byteorder.Native, tn)
+	default:
+		err = fmt.Errorf("Unrecognized trace event (version %d)", version)
+	}
+	return err
+}
+
+func (n *TraceNotify) encryptReason() string {
+	if (n.Reason & TraceReasonEncryptMask) != 0 {
+		return "encrypted "
+	}
+	return ""
+}
+
+func (n *TraceNotify) traceReason() string {
+	return connState(n.Reason)
+}
+
 func (n *TraceNotify) traceSummary() string {
 	switch n.ObsPoint {
-	case TraceToLxc:
+	case api.TraceToLxc:
 		return fmt.Sprintf("-> endpoint %d", n.DstID)
-	case TraceToProxy:
+	case api.TraceToProxy:
 		return "-> proxy"
-	case TraceToHost:
+	case api.TraceToHost:
 		return "-> host from"
-	case TraceToStack:
+	case api.TraceToStack:
 		return "-> stack"
-	case TraceToOverlay:
+	case api.TraceToOverlay:
 		return "-> overlay"
-	case TraceFromLxc:
+	case api.TraceToNetwork:
+		return "-> network"
+	case api.TraceFromLxc:
 		return fmt.Sprintf("<- endpoint %d", n.Source)
-	case TraceFromProxy:
+	case api.TraceFromProxy:
 		return "<- proxy"
-	case TraceFromHost:
+	case api.TraceFromHost:
 		return "<- host"
-	case TraceFromStack:
+	case api.TraceFromStack:
 		return "<- stack"
-	case TraceFromOverlay:
+	case api.TraceFromOverlay:
 		return "<- overlay"
+	case api.TraceFromNetwork:
+		return "<- network"
 	default:
 		return "unknown trace"
 	}
 }
 
+// OriginalIP returns the original source IP if reverse NAT was performed on
+// the flow
+func (n *TraceNotify) OriginalIP() net.IP {
+	if (n.Flags & TraceNotifyFlagIsIPv6) != 0 {
+		return n.OrigIP[:]
+	}
+	return n.OrigIP[:4]
+}
+
+// DataOffset returns the offset from the beginning of TraceNotify where the
+// trace notify data begins.
+//
+// Returns zero for invalid or unknown TraceNotify messages.
+func (n *TraceNotify) DataOffset() uint {
+	return traceNotifyLength[n.Version]
+}
+
 // DumpInfo prints a summary of the trace messages.
 func (n *TraceNotify) DumpInfo(data []byte) {
-	fmt.Printf("%s flow %#x identity %d->%d state %s ifindex %s: %s\n",
-		n.traceSummary(), n.Hash, n.SrcLabel, n.DstLabel,
-		connState(n.Reason), ifname(int(n.Ifindex)), GetConnectionSummary(data[TraceNotifyLen:]))
+	hdrLen := n.DataOffset()
+	if n.encryptReason() != "" {
+		fmt.Printf("%s %s flow %#x identity %d->%d state %s ifindex %s orig-ip %s: %s\n",
+			n.traceSummary(), n.encryptReason(), n.Hash, n.SrcLabel, n.DstLabel,
+			n.traceReason(), ifname(int(n.Ifindex)), n.OriginalIP().String(), GetConnectionSummary(data[hdrLen:]))
+	} else {
+		fmt.Printf("%s flow %#x identity %d->%d state %s ifindex %s orig-ip %s: %s\n",
+			n.traceSummary(), n.Hash, n.SrcLabel, n.DstLabel,
+			n.traceReason(), ifname(int(n.Ifindex)), n.OriginalIP().String(), GetConnectionSummary(data[hdrLen:]))
+	}
 }
 
 // DumpVerbose prints the trace notification in human readable form
 func (n *TraceNotify) DumpVerbose(dissect bool, data []byte, prefix string) {
 	fmt.Printf("%s MARK %#x FROM %d %s: %d bytes (%d captured), state %s",
-		prefix, n.Hash, n.Source, obsPoint(n.ObsPoint), n.OrigLen, n.CapLen, connState(n.Reason))
+		prefix, n.Hash, n.Source, api.TraceObservationPoint(n.ObsPoint), n.OrigLen, n.CapLen, connState(n.Reason))
 
 	if n.Ifindex != 0 {
 		fmt.Printf(", interface %s", ifname(int(n.Ifindex)))
@@ -144,22 +222,26 @@ func (n *TraceNotify) DumpVerbose(dissect bool, data []byte, prefix string) {
 		fmt.Printf(", identity %d->%d", n.SrcLabel, n.DstLabel)
 	}
 
+	fmt.Printf(", orig-ip " + n.OriginalIP().String())
+
 	if n.DstID != 0 {
 		fmt.Printf(", to endpoint %d\n", n.DstID)
 	} else {
 		fmt.Printf("\n")
 	}
 
-	if n.CapLen > 0 && len(data) > TraceNotifyLen {
-		Dissect(dissect, data[TraceNotifyLen:])
+	hdrLen := n.DataOffset()
+	if n.CapLen > 0 && len(data) > int(hdrLen) {
+		Dissect(dissect, data[hdrLen:])
 	}
 }
 
 func (n *TraceNotify) getJSON(data []byte, cpuPrefix string) (string, error) {
 	v := TraceNotifyToVerbose(n)
 	v.CPUPrefix = cpuPrefix
-	if n.CapLen > 0 && len(data) > TraceNotifyLen {
-		v.Summary = GetDissectSummary(data[TraceNotifyLen:])
+	hdrLen := n.DataOffset()
+	if n.CapLen > 0 && len(data) > int(hdrLen) {
+		v.Summary = GetDissectSummary(data[hdrLen:])
 	}
 
 	ret, err := json.Marshal(v)
@@ -200,7 +282,7 @@ func TraceNotifyToVerbose(n *TraceNotify) TraceNotifyVerbose {
 		Mark:             fmt.Sprintf("%#x", n.Hash),
 		Ifindex:          ifname(int(n.Ifindex)),
 		State:            connState(n.Reason),
-		ObservationPoint: obsPoint(n.ObsPoint),
+		ObservationPoint: api.TraceObservationPoint(n.ObsPoint),
 		TraceSummary:     n.traceSummary(),
 		Source:           n.Source,
 		Bytes:            n.OrigLen,

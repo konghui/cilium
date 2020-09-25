@@ -30,4 +30,5 @@ cilium fqdn [flags]
 
 * [cilium](../cilium)	 - CLI
 * [cilium fqdn cache](../cilium_fqdn_cache)	 - Manage fqdn proxy cache
+* [cilium fqdn names](../cilium_fqdn_names)	 - show internal state Cilium has for DNS names / regexes
 

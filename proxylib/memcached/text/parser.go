@@ -31,8 +31,8 @@ import (
 type ParserFactory struct{}
 
 // Create creates memcached parser
-func (p *ParserFactory) Create(connection *proxylib.Connection) proxylib.Parser {
-	log.Infof("ParserFactory: Create: %v", connection)
+func (p *ParserFactory) Create(connection *proxylib.Connection) interface{} {
+	log.Debugf("ParserFactory: Create: %v", connection)
 	return &Parser{connection: connection, replyQueue: make([]*replyIntent, 0)}
 }
 
@@ -161,7 +161,7 @@ func (p *Parser) OnData(reply, endStream bool, dataBuffers [][]byte) (proxylib.O
 			return proxylib.ERROR, 0
 		}
 		logEntry := &cilium.LogEntry_GenericL7{
-			&cilium.L7LogEntry{
+			GenericL7: &cilium.L7LogEntry{
 				Proto: "textmemcached",
 				Fields: map[string]string{
 					"command": meta.Command,
@@ -203,7 +203,7 @@ func (p *Parser) OnData(reply, endStream bool, dataBuffers [][]byte) (proxylib.O
 	intent := p.replyQueue[0]
 
 	logEntry := &cilium.LogEntry_GenericL7{
-		&cilium.L7LogEntry{
+		GenericL7: &cilium.L7LogEntry{
 			Proto: "textmemcached",
 			Fields: map[string]string{
 				"command": string(intent.command),

@@ -2,7 +2,7 @@
 
     WARNING: You are looking at unreleased Cilium documentation.
     Please use the official rendered version released here:
-    http://docs.cilium.io
+    https://docs.cilium.io
 
 .. _admin_guide:
 
@@ -56,7 +56,7 @@ context of that pod:
 .. code:: bash
 
     $ kubectl -n kube-system exec -ti cilium-2hq5z -- cilium status
-    KVStore:                Ok   etcd: 1/1 connected: http://demo-etcd-lab--a.etcd.tgraf.test1.lab.corp.covalent.link:2379 - 3.2.5 (Leader)
+    KVStore:                Ok   etcd: 1/1 connected: http://demo-etcd-lab--a.etcd.tgraf.test1.lab.corp.isovalent.link:2379 - 3.2.5 (Leader)
     ContainerRuntime:       Ok   docker daemon: OK
     Kubernetes:             Ok   OK
     Kubernetes APIs:        ["cilium/v2::CiliumNetworkPolicy", "networking.k8s.io/v1::NetworkPolicy", "core/v1::Service", "core/v1::Endpoint", "core/v1::Node", "CustomResourceDefinition"]
@@ -91,6 +91,13 @@ of all nodes in the cluster:
     Controller Status:      7/7 healthy
     Proxy Status:           OK, ip 10.15.28.238, 0 redirects, port-range 10000-20000
     Cluster health:   1/1 reachable   (2018-02-27T00:24:34Z)
+
+Detailed information about the status of Cilium can be inspected with the
+``cilium status --verbose`` command. Verbose output includes detailed IPAM state
+(allocated addresses), Cilium controller status, and details of the Proxy
+status.
+
+.. _ts_agent_logs:
 
 Logs
 ~~~~
@@ -130,20 +137,265 @@ e.g.:
     IPv6 address pool:      4/4294967295 allocated
     Controller Status:      20/20 healthy
     Proxy Status:           OK, ip 10.0.28.238, port-range 10000-20000
-    Cluster health:   2/2 reachable   (2018-04-11T15:41:01Z)
+    Hubble:                 Ok      Current/Max Flows: 2542/4096 (62.06%), Flows/s: 164.21      Metrics: Disabled
+    Cluster health:         2/2 reachable   (2018-04-11T15:41:01Z)
+
+.. _hubble_troubleshooting:
+
+Observing Flows with Hubble
+===========================
+
+Hubble is a built-in observability tool which allows you to inspect recent flow
+events on all endpoints managed by Cilium. It needs to be enabled via the Helm
+value ``global.hubble.enabled=true`` or the ``--enable-hubble`` option on
+cilium-agent.
+
+Observing flows of a specific pod
+---------------------------------
+
+In order to observe the traffic of a specific pod, you will first have to
+:ref:`retrieve the name of the cilium instance managing it<retrieve_cilium_pod>`.
+The Hubble CLI is part of the Cilium container image and can be accessed via
+``kubectl exec``. The following query for example will show all events related
+to flows which either originated or terminated in the ``default/tiefighter`` pod
+in the last three minutes:
+
+.. code:: bash
+
+    $ kubectl exec -n kube-system cilium-77lk6 -- hubble observe --since 3m --pod default/tiefighter
+    Jun  2 11:14:46.041   default/tiefighter:38314                  kube-system/coredns-66bff467f8-ktk8c:53   to-endpoint   FORWARDED   UDP
+    Jun  2 11:14:46.041   kube-system/coredns-66bff467f8-ktk8c:53   default/tiefighter:38314                  to-endpoint   FORWARDED   UDP
+    Jun  2 11:14:46.041   default/tiefighter:38314                  kube-system/coredns-66bff467f8-ktk8c:53   to-endpoint   FORWARDED   UDP
+    Jun  2 11:14:46.042   kube-system/coredns-66bff467f8-ktk8c:53   default/tiefighter:38314                  to-endpoint   FORWARDED   UDP
+    Jun  2 11:14:46.042   default/tiefighter:57746                  default/deathstar-5b7489bc84-9bftc:80     L3-L4         FORWARDED   TCP Flags: SYN
+    Jun  2 11:14:46.042   default/tiefighter:57746                  default/deathstar-5b7489bc84-9bftc:80     to-endpoint   FORWARDED   TCP Flags: SYN
+    Jun  2 11:14:46.042   default/deathstar-5b7489bc84-9bftc:80     default/tiefighter:57746                  to-endpoint   FORWARDED   TCP Flags: SYN, ACK
+    Jun  2 11:14:46.042   default/tiefighter:57746                  default/deathstar-5b7489bc84-9bftc:80     to-endpoint   FORWARDED   TCP Flags: ACK
+    Jun  2 11:14:46.043   default/tiefighter:57746                  default/deathstar-5b7489bc84-9bftc:80     to-endpoint   FORWARDED   TCP Flags: ACK, PSH
+    Jun  2 11:14:46.043   default/deathstar-5b7489bc84-9bftc:80     default/tiefighter:57746                  to-endpoint   FORWARDED   TCP Flags: ACK, PSH
+    Jun  2 11:14:46.043   default/tiefighter:57746                  default/deathstar-5b7489bc84-9bftc:80     to-endpoint   FORWARDED   TCP Flags: ACK, FIN
+    Jun  2 11:14:46.048   default/deathstar-5b7489bc84-9bftc:80     default/tiefighter:57746                  to-endpoint   FORWARDED   TCP Flags: ACK, FIN
+    Jun  2 11:14:46.048   default/tiefighter:57746                  default/deathstar-5b7489bc84-9bftc:80     to-endpoint   FORWARDED   TCP Flags: ACK
+
+You may also use ``-o json`` to obtain more detailed information about each
+flow event.
+
+In the following example the first command extracts the numeric security
+identities for all dropped flows which originated in the ``default/xwing`` pod
+in the last three minutes. The numeric security identity can then be used
+together with the Cilium CLI to obtain more information about why flow was
+dropped:
+
+.. code:: bash
+
+    $ kubectl exec -n kube-system cilium-77lk6 -- \
+        hubble observe --since 3m --type drop --from-pod default/xwing -o json | \
+        jq .destination.identity | sort -u
+    788
+
+    $ kubectl exec -n kube-system cilium-77lk6 -- \
+        cilium policy trace --src-k8s-pod default:xwing --dst-identity 788
+    ----------------------------------------------------------------
+
+    Tracing From: [k8s:class=xwing, k8s:io.cilium.k8s.policy.cluster=default, k8s:io.cilium.k8s.policy.serviceaccount=default, k8s:io.kubernetes.pod.namespace=default, k8s:org=alliance] => To: [k8s:class=deathstar, k8s:io.cilium.k8s.policy.cluster=default, k8s:io.cilium.k8s.policy.serviceaccount=default, k8s:io.kubernetes.pod.namespace=default, k8s:org=empire] Ports: [0/ANY]
+
+    Resolving ingress policy for [k8s:class=deathstar k8s:io.cilium.k8s.policy.cluster=default k8s:io.cilium.k8s.policy.serviceaccount=default k8s:io.kubernetes.pod.namespace=default k8s:org=empire]
+    * Rule {"matchLabels":{"any:class":"deathstar","any:org":"empire","k8s:io.kubernetes.pod.namespace":"default"}}: selected
+        Allows from labels {"matchLabels":{"any:org":"empire","k8s:io.kubernetes.pod.namespace":"default"}}
+          No label match for [k8s:class=xwing k8s:io.cilium.k8s.policy.cluster=default k8s:io.cilium.k8s.policy.serviceaccount=default k8s:io.kubernetes.pod.namespace=default k8s:org=alliance]
+    1/1 rules selected
+    Found no allow rule
+    Ingress verdict: denied
+
+    Final verdict: DENIED
+
+
+Please refer to the :ref:`policy troubleshooting guide<policy_tracing>` for
+more detail about how to troubleshoot policy related drops.
+
+.. note::
+    **Hubble Relay** (beta) allows you to query multiple Hubble instances
+    simultaneously without having to first manually target a specific node.
+    See `Observing flows with Hubble Relay`_ for more information.
+
+Ensure Hubble is running correctly
+----------------------------------
+
+To ensure the Hubble client can connect to the Hubble server running inside
+Cilium, you may use the ``hubble status`` command:
+
+.. code:: bash
+
+    $ hubble status
+    Healthcheck (via unix:///var/run/cilium/hubble.sock): Ok
+    Max Flows: 4096
+    Current Flows: 2542 (62.06%)
+
+``cilium-agent`` must be running with the ``--enable-hubble`` option in order
+for the Hubble server to be enabled. When deploying Cilium with Helm, make sure
+to set the ``global.hubble.enabled=true`` value.
+
+To check if Hubble is enabled in your deployment, you may look for the
+following output in ``cilium status``:
+
+.. code:: bash
+
+    $ cilium status
+    ...
+    Hubble:   Ok   Current/Max Flows: 2542/4096 (62.06%), Flows/s: 164.21   Metrics: Disabled
+    ...
+
+.. note::
+    Pods need to be managed by Cilium in order to be observable by Hubble.
+    See how to :ref:`ensure a pod is managed by Cilium<ensure_managed_pod>`
+    for more details.
+
+Observing flows with Hubble Relay
+=================================
+
+.. note::
+   **Hubble Relay** is beta software and as such is not yet considered
+   production ready.
+
+Hubble Relay is a service which allows to query multiple Hubble instances
+simultaneously and aggregate the results. As Hubble Relay relies on individual
+Hubble instances, Hubble needs to be enabled when deploying Cilium. In
+addition, the Hubble service needs to be exposed on TCP port ``4244``. This can
+be done via the Helm values ``--enable-hubble`` and
+``--hubble-listen-address :4244`` options on cilium-agent.
+
+.. note::
+   Enabling Hubble to listen on TCP port 4244 globally has security
+   implications as the service can be accessed without any restriction.
+
+Hubble Relay can be deployed using Helm by setting
+``global.hubble.relay.enabled=true``. This will deploy Hubble Relay with one
+replica by default. Once the Hubble Relay pod is running, you may access the
+service by port-forwarding it:
+
+.. code:: bash
+
+    $ kubectl -n kube-system port-forward service/hubble-relay --address 0.0.0.0 --address :: 4245:80
+
+This will forward the Hubble Relay service port (``80``) to your local machine
+on port ``4245`` on all of it's IP addresses. The next step consists of
+downloading the latest binary release of Hubble CLI from the
+`GitHub release page <https://github.com/cilium/hubble/releases>`_. Make sure to
+download the tarball for your platform, verify the checksum and extract the
+``hubble`` binary from the tarball. Optionally, add the binary to your
+``$PATH`` if using Linux or MacOS or your ``%PATH%`` if using Windows.
+
+You can verify that Hubble Relay can be reached by running the following
+command:
+
+.. code:: bash
+
+    $ hubble status --server localhost:4245
+
+This command should return an output similar to the following:
+
+.. code:: bash
+
+    Healthcheck (via localhost:4245): Ok
+    Max Flows: 16384
+    Current Flows: 16384 (100.00%)
+
+For convenience, you may set and export the ``HUBBLE_DEFAULT_SOCKET_PATH``
+environment variable:
+
+.. code:: bash
+
+    $ export HUBBLE_DEFAULT_SOCKET_PATH=localhost:4245
+
+This will allow you to use ``hubbble status`` and ``hubble observe`` commands
+without having to specify the server address via the ``--server`` flag.
+
+As Hubble Relay shares the same API as individual Hubble instances, you may
+follow the `Observing flows with Hubble`_ section keeping in mind that
+limitations with regards to what can be seen from individual Hubble instances no
+longer apply.
 
 Connectivity Problems
 =====================
 
+Cilium connectivity tests
+------------------------------------
+
+The Cilium connectivity test_ deploys a series of services, deployments, and
+CiliumNetworkPolicy which will use various connectivity paths to connect to
+each other. Connectivity paths include with and without service load-balancing
+and various network policy combinations.
+
+.. Note::
+
+          The connectivity tests this will only work in a namespace with no
+          other pods or network policies applied. If there is a Cilium
+          Clusterwide Network Policy enabled, that may also break this
+          connectivity check.
+
+To run the connectivity tests create an isolated test namespace called
+``cilium-test`` to deploy the tests with.
+
+.. parsed-literal::
+
+    $ kubectl create ns cilium-test
+    $ kubectl apply --namespace=cilium-test -f \ |SCM_WEB|\/examples/kubernetes/connectivity-check/connectivity-check.yaml
+
+The tests cover various functionality of the system. Below we call out each test
+type. If tests pass, it suggests functionality of the referenced subsystem.
+
++----------------------------+-----------------------------+-------------------------------+-----------------------------+----------------------------------------+
+| Pod-to-pod (intra-host)    | Pod-to-pod (inter-host)     | Pod-to-service (intra-host)   | Pod-to-service (inter-host) | Pod-to-external resource               |
++============================+=============================+===============================+=============================+========================================+
+| eBPF routing is functional | Data plane, routing, network| eBPF service map lookup       | VXLAN overlay port if used  | Egress, CiliumNetworkPolicy, masquerade|
++----------------------------+-----------------------------+-------------------------------+-----------------------------+----------------------------------------+
+
+The pod name indicates the connectivity
+variant and the readiness and liveness gate indicates success or failure of the
+test:
+
+.. _test: \ |SCM_WEB|\/examples/kubernetes/connectivity-check/connectivity-check.yaml
+
+.. code:: shell-session
+
+   $ kubectl get pods -n cilium-test
+   NAME                                                    READY   STATUS    RESTARTS   AGE
+   echo-a-6788c799fd-42qxx                                 1/1     Running   0          69s
+   echo-b-59757679d4-pjtdl                                 1/1     Running   0          69s
+   echo-b-host-f86bd784d-wnh4v                             1/1     Running   0          68s
+   host-to-b-multi-node-clusterip-585db65b4d-x74nz         1/1     Running   0          68s
+   host-to-b-multi-node-headless-77c64bc7d8-kgf8p          1/1     Running   0          67s
+   pod-to-a-allowed-cnp-87b5895c8-bfw4x                    1/1     Running   0          68s
+   pod-to-a-b76ddb6b4-2v4kb                                1/1     Running   0          68s
+   pod-to-a-denied-cnp-677d9f567b-kkjp4                    1/1     Running   0          68s
+   pod-to-b-intra-node-nodeport-8484fb6d89-bwj8q           1/1     Running   0          68s
+   pod-to-b-multi-node-clusterip-f7655dbc8-h5bwk           1/1     Running   0          68s
+   pod-to-b-multi-node-headless-5fd98b9648-5bjj8           1/1     Running   0          68s
+   pod-to-b-multi-node-nodeport-74bd8d7bd5-kmfmm           1/1     Running   0          68s
+   pod-to-external-1111-7489c7c46d-jhtkr                   1/1     Running   0          68s
+   pod-to-external-fqdn-allow-google-cnp-b7b6bcdcb-97p75   1/1     Running   0          68s
+
+
+Information about test failures can be determined by describing a failed test
+pod
+
+.. code:: bash
+
+    $ kubectl describe pod pod-to-b-intra-node-hostport
+      Warning  Unhealthy  6s (x6 over 56s)   kubelet, agent1    Readiness probe failed: curl: (7) Failed to connect to echo-b-host-headless port 40000: Connection refused
+      Warning  Unhealthy  2s (x3 over 52s)   kubelet, agent1    Liveness probe failed: curl: (7) Failed to connect to echo-b-host-headless port 40000: Connection refused
+
+.. _cluster_connectivity_health:
+
 Checking cluster connectivity health
 ------------------------------------
 
-Cilium allows to rule out network fabric related issues when troubleshooting
+Cilium can rule out network fabric related issues when troubleshooting
 connectivity issues by providing reliable health and latency probes between all
-cluster nodes and between a simulated workload running on each node.
+cluster nodes and a simulated workload running on each node.
 
 By default when Cilium is run, it launches instances of ``cilium-health`` in
-the background to determine overall connectivity status of the cluster. This
+the background to determine the overall connectivity status of the cluster. This
 tool periodically runs bidirectional traffic across multiple paths through the
 cluster and through each node using different protocols to determine the health
 status of each path and protocol. At any point in time, cilium-health may be
@@ -176,32 +428,56 @@ minute. The ICMP connectivity row represents Layer 3 connectivity to the
 networking stack, while the HTTP connectivity row represents connection to an
 instance of the ``cilium-health`` agent running on the host or as an endpoint.
 
-Monitoring Packet Drops
------------------------
+.. _monitor:
+
+Monitoring Datapath State
+-------------------------
 
 Sometimes you may experience broken connectivity, which may be due to a
 number of different causes. A main cause can be unwanted packet drops on
 the networking level. The tool
 ``cilium monitor`` allows you to quickly inspect and see if and where packet
-drops happen. Following is an example output (use ``kubectl exec`` as in previous
-examples if running with Kubernetes):
+drops happen. Following is an example output (use ``kubectl exec`` as in
+previous examples if running with Kubernetes):
 
 .. code:: bash
 
     $ kubectl -n kube-system exec -ti cilium-2hq5z -- cilium monitor --type drop
     Listening for events on 2 CPUs with 64x4096 of shared memory
     Press Ctrl-C to quit
-    xx drop (Policy denied (L3)) to endpoint 25729, identity 261->264: fd02::c0a8:210b:0:bf00 -> fd02::c0a8:210b:0:6481 EchoRequest
-    xx drop (Policy denied (L3)) to endpoint 25729, identity 261->264: fd02::c0a8:210b:0:bf00 -> fd02::c0a8:210b:0:6481 EchoRequest
-    xx drop (Policy denied (L3)) to endpoint 25729, identity 261->264: 10.11.13.37 -> 10.11.101.61 EchoRequest
-    xx drop (Policy denied (L3)) to endpoint 25729, identity 261->264: 10.11.13.37 -> 10.11.101.61 EchoRequest
+    xx drop (Policy denied) to endpoint 25729, identity 261->264: fd02::c0a8:210b:0:bf00 -> fd02::c0a8:210b:0:6481 EchoRequest
+    xx drop (Policy denied) to endpoint 25729, identity 261->264: fd02::c0a8:210b:0:bf00 -> fd02::c0a8:210b:0:6481 EchoRequest
+    xx drop (Policy denied) to endpoint 25729, identity 261->264: 10.11.13.37 -> 10.11.101.61 EchoRequest
+    xx drop (Policy denied) to endpoint 25729, identity 261->264: 10.11.13.37 -> 10.11.101.61 EchoRequest
     xx drop (Invalid destination mac) to endpoint 0, identity 0->0: fe80::5c25:ddff:fe8e:78d8 -> ff02::2 RouterSolicitation
 
 The above indicates that a packet to endpoint ID ``25729`` has been dropped due
 to violation of the Layer 3 policy.
 
+Handling drop (CT: Map insertion failed)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+If connectivity fails and ``cilium monitor --type drop`` shows ``xx drop (CT:
+Map insertion failed)``, then it is likely that the connection tracking table
+is filling up and the automatic adjustment of the garbage collector interval is
+insufficient. Set ``--conntrack-gc-interval`` to an interval lower than the
+default.  Alternatively, the value for ``bpf-ct-global-any-max`` and
+``bpf-ct-global-tcp-max`` can be increased. Setting both of these options will
+be a trade-off of CPU for ``conntrack-gc-interval``, and for
+``bpf-ct-global-any-max`` and ``bpf-ct-global-tcp-max`` the amount of memory
+consumed.
+
+Enabling datapath debug messages
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+By default, datapath debug messages are disabled, and therefore not shown in
+``cilium monitor -v`` output. To enable them, add ``"datapath"`` to
+the ``debug-verbose`` option.
+
 Policy Troubleshooting
 ======================
+
+.. _ensure_managed_pod:
 
 Ensure pod is managed by Cilium
 -------------------------------
@@ -242,21 +518,21 @@ Understand the rendering of your policy
 
 There are always multiple ways to approach a problem. Cilium can provide the
 rendering of the aggregate policy provided to it, leaving you to simply compare
-with what you expect the policy to actually be rather than search (and potentially
-overlook) every policy. At the expense of reading a very large dump of an endpoint,
-this is often a faster path to discovering errant policy requests in the Kubernetes
-API.
+with what you expect the policy to actually be rather than search (and
+potentially overlook) every policy. At the expense of reading a very large dump
+of an endpoint, this is often a faster path to discovering errant policy
+requests in the Kubernetes API.
 
-Start by finding the endpoint you are debugging from the following list. There are
-several cross references for you to use in this list, including the IP address and
-pod labels:
+Start by finding the endpoint you are debugging from the following list. There
+are several cross references for you to use in this list, including the IP
+address and pod labels:
 
 .. code:: bash
 
     kubectl -n kube-system exec -ti cilium-q8wvt -- cilium endpoint list
 
-When you find the correct endpoint, the first column of every row is the endpoint ID.
-Use that to dump the full endpoint information:
+When you find the correct endpoint, the first column of every row is the
+endpoint ID. Use that to dump the full endpoint information:
 
 .. code:: bash
 
@@ -271,47 +547,142 @@ information here. At the top level of the dump, there are two nodes of note:
 * ``spec``: The desired state of the endpoint
 * ``status``: The current state of the endpoint
 
-This is the standard Kubernetes control loop pattern. Cilium is the controller here,
-and it is iteratively working to bring the ``status`` in line with the ``spec``.
+This is the standard Kubernetes control loop pattern. Cilium is the controller
+here, and it is iteratively working to bring the ``status`` in line with the
+``spec``.
 
-Opening the ``status``, we can drill down through ``policy.realized.l4``. Do your
-``ingress`` and ``egress`` rules match what you expect? If not, the reference to the errant
-rules can be found in the ``derived-from-rules`` node.
+Opening the ``status``, we can drill down through ``policy.realized.l4``. Do
+your ``ingress`` and ``egress`` rules match what you expect? If not, the
+reference to the errant rules can be found in the ``derived-from-rules`` node.
 
-Automatic Diagnosis
-===================
+etcd (kvstore)
+==============
 
-The ``cluster-diagnosis`` tool can help identify the most commonly encountered
-issues in Cilium deployments. The tool currently supports Kubernetes
-and Minikube clusters only.
+Introduction
+------------
 
-The tool performs various checks and provides hints to fix specific
-issues that it has identified.
+Cilium can be operated in CRD-mode and kvstore/etcd mode. When cilium is
+running in kvstore/etcd mode, the kvstore becomes a vital component of the
+overall cluster health as it is required to be available for several
+operations.
 
-The following is a list of prerequisites:
+Operations for which the kvstore is strictly required when running in etcd
+mode:
 
-* Requires Python >= 2.7.*
-* Requires ``kubectl``.
-* ``kubectl`` should be pointing to your cluster before running the tool.
+Scheduling of new workloads:
+  As part of of scheduling workloads/endpoints, agents will perform security
+  identity allocation which requires interaction with the kvstore. If a
+  workload can be scheduled due to re-using a known security identity, then
+  state propagation of the endpoint details to other nodes will still depend on
+  the kvstore and thus policy drops may be observed as other nodes in the
+  cluster will not be aware of the new workload.
 
-You can download the latest version of the cluster-diagnosis.zip file
-using the following command:
+Multi cluster:
+  All state propagation between clusters depends on the kvstore.
 
-::
+Node discovery:
+  New nodes require to register themselves in the kvstore.
 
-    curl -sLO releases.cilium.io/tools/cluster-diagnosis.zip
+Agent bootstrap:
+  The Cilium agent will eventually fail if it can't connect to the kvstore at
+  bootstrap time, however, the agent will still perform all possible operations
+  while waiting for the kvstore to appear.
 
-Command to run the cluster-diagnosis tool:
+Operations which *do not* require kvstore availability:
+
+All datapath operations:
+  All datapath forwarding, policy enforcement and visibility functions for
+  existing workloads/endpoints do not depend on the kvstore. Packets will
+  continue to be forwarded and network policy rules will continue to be
+  enforced.
+
+  However, if the agent requires to restart as part of the
+  :ref:`etcd_recovery_behavior`, there can be delays in:
+
+  * processing of flow events and metrics
+  * short unavailability of layer 7 proxies
+
+NetworkPolicy updates:
+  Network policy updates will continue to be processed and applied.
+
+Services updates:
+  All updates to services will be processed and applied.
+
+Understanding etcd status
+-------------------------
+
+The etcd status is reported when running ``cilium status``. The following line
+represents the status of etcd:
 
 .. code:: bash
 
-    python cluster-diagnosis.zip
+   KVStore:  Ok  etcd: 1/1 connected, lease-ID=29c6732d5d580cb5, lock lease-ID=29c6732d5d580cb7, has-quorum=true: https://192.168.33.11:2379 - 3.4.9 (Leader)
 
-Command to collect the system dump using the cluster-diagnosis tool:
+OK:
+  The overall status. Either ``OK`` or ``Failure``.
+
+1/1 connected:
+  Number of total etcd endpoints and how many of them are reachable.
+
+lease-ID:
+  UUID of the lease used for all keys owned by this agent.
+
+lock lease-ID:
+  UUID of the lease used for locks acquired by this agent.
+
+has-quorum:
+  Status of etcd quorum. Either ``true`` or set to an error.
+
+consecutive-errors:
+  Number of consecutive quorum errors. Only printed if errors are present.
+
+https://192.168.33.11:2379 - 3.4.9 (Leader):
+  List of all etcd endpoints stating the etcd version and whether the
+  particular endpoint is currently the elected leader. If an etcd endpoint
+  cannot be reached, the error is shown.
+
+.. _etcd_recovery_behavior:
+
+Recovery behavior
+-----------------
+
+In the event of an etcd endpoint becoming unhealthy, etcd should automatically
+resolve this by electing a new leader and by failing over to a healthy etcd
+endpoint. As long as quorum is preserved, the etcd cluster will remain
+functional.
+
+In addition, Cilium performs a background check in an interval to determine
+etcd health and potentially take action. The interval depends on the overall
+cluster size. The larger the cluster, the longer the `interval
+<https://pkg.go.dev/github.com/cilium/cilium/pkg/kvstore?tab=doc#ExtraOptions.StatusCheckInterval>`_:
+
+ * If no etcd endpoints can be reached, Cilium will report failure in ``cilium
+   status``. This will cause the liveness and readiness probe of Kubernetes to
+   fail and Cilium will be restarted.
+
+ * A lock is acquired and released to test a write operation which requires
+   quorum. If this operation fails, loss of quorum is reported. If quorum fails
+   for three or more intervals in a row, Cilium is declared unhealthy.
+
+ * The Cilium operator will constantly write to a heartbeat key
+   (``cilium/.heartbeat``). All Cilium agents will watch for updates to this
+   heartbeat key. This validates the ability for an agent to receive key
+   updates from etcd. If the heartbeat key is not updated in time, the quorum
+   check is declared to have failed and Cilium is declared unhealthy after 3 or
+   more consecutive failures.
+
+Example of a status with a quorum failure which has not yet reached the
+threshold:
 
 .. code:: bash
 
-    python cluster-diagnosis.zip sysdump
+    KVStore: Ok   etcd: 1/1 connected, lease-ID=29c6732d5d580cb5, lock lease-ID=29c6732d5d580cb7, has-quorum=2m2.778966915s since last heartbeat update has been received, consecutive-errors=1: https://192.168.33.11:2379 - 3.4.9 (Leader)
+
+Example of a status with the number of quorum failures exceeding the threshold:
+
+.. code:: bash
+
+    KVStore: Failure   Err: quorum check failed 8 times in a row: 4m28.446600949s since last heartbeat update has been received
 
 Symptom Library
 ===============
@@ -363,6 +734,8 @@ When running in :ref:`arch_direct_routing` mode:
 
 Useful Scripts
 ==============
+
+.. _retrieve_cilium_pod:
 
 Retrieve Cilium pod managing a particular pod
 ---------------------------------------------
@@ -442,13 +815,26 @@ The script has the following list of prerequisites:
 * Requires ``kubectl``.
 * ``kubectl`` should be pointing to your cluster before running the tool.
 
-You can download the latest version of the cluster-diagnosis.zip file
-using the following command:
+You can download the latest version of the ``cilium-sysdump`` tool using the
+following command:
 
 .. code:: bash
 
-    $ curl -sLO releases.cilium.io/tools/cluster-diagnosis.zip
-    $ python cluster-diagnosis.zip sysdump
+    curl -sLO https://github.com/cilium/cilium-sysdump/releases/latest/download/cilium-sysdump.zip
+    python cilium-sysdump.zip
+
+You can specify from which nodes to collect the system dumps by passing
+node IP addresses via the ``--nodes`` argument:
+
+.. code:: bash
+
+    python cilium-sysdump.zip --nodes=$NODE1_IP,$NODE2_IP2
+
+Use ``--help`` to see more options:
+
+.. code:: bash
+
+    python cilium-sysdump.zip --help
 
 Single Node Bugtool
 ~~~~~~~~~~~~~~~~~~~
@@ -474,13 +860,6 @@ files and execute some commands. If ``kubectl`` is detected, it will search for
 Cilium pods. The default label being ``k8s-app=cilium``, but this and the
 namespace can be changed via ``k8s-namespace`` and ``k8s-label`` respectively.
 
-If you'd prefer to browse the dump, there is a HTTP flag.
-
-.. code:: bash
-
-    $ cilium-bugtool --serve
-
-
 If you want to capture the archive from a Kubernetes pod, then the process is a
 bit different
 
@@ -495,7 +874,7 @@ bit different
       kubernetes-dashboard-6xvc7    1/1       Running   0          1h
 
     # Run the bugtool from this pod
-    $ kubectl -n kube-system exec cilium-kg8lv cilium-bugtool
+    $ kubectl -n kube-system exec cilium-kg8lv -- cilium-bugtool
       [...]
 
     # Copy the archive from the pod
@@ -569,17 +948,17 @@ visiting `Slack <https://cilium.herokuapp.com/>`_.
 Report an issue via GitHub
 --------------------------
 
-If you believe to have found an issue in Cilium, please report a `GitHub issue
-<https://github.com/cilium/cilium/issues>`_ and make sure to attach a system
-dump as described above to ensure that developers have the best chance to
-reproduce the issue.
+If you believe to have found an issue in Cilium, please report a
+`GitHub issue`_ and make sure to attach a system dump as described above to
+ensure that developers have the best chance to reproduce the issue.
 
 .. _Slack channel: https://cilium.herokuapp.com
 .. _NodeSelector: https://kubernetes.io/docs/concepts/configuration/assign-pod-node/
-.. _RBAC: https://kubernetes.io/docs/admin/authorization/rbac/
+.. _RBAC: https://kubernetes.io/docs/reference/access-authn-authz/rbac/
 .. _CNI: https://github.com/containernetworking/cni
 .. _Volumes: https://kubernetes.io/docs/tasks/configure-pod-container/configure-volume-storage/
 
 .. _Cilium Frequently Asked Questions (FAQ): https://github.com/cilium/cilium/issues?utf8=%E2%9C%93&q=label%3Akind%2Fquestion%20
 
 .. _issue tracker: https://github.com/cilium/cilium/issues
+.. _GitHub issue: `issue tracker`_
